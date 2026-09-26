@@ -291,3 +291,6 @@ docs/
 /.github/workflows/link-checker.yml
 /.github/workflows/awesome-lint.yml
 /.github/workflows/weekly-health.yml
+
+/ecom/
+/tests/test_runtime_bridge.py

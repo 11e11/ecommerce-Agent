@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta id="theme-color" name="theme-color" content="#f7f8f9">
+  <title>Commerce Agent OS · 今日简报</title>
+  <link rel="icon" href="/app/assets/brands/commerce-agent-os.png">
+  <link rel="stylesheet" href="/app/styles.css">
+</head>
+<body>
+  <div class="app-shell" data-ui-system="l7-decision-workspace">
+    <aside class="sidebar" data-ui-region="navigation" aria-label="主导航">
+      <div class="brand-lockup">
+        <img class="brand-mark" src="/app/assets/brands/commerce-agent-os.png" alt="">
+        <strong>Commerce Agent OS</strong>
+      </div>
+      <nav class="side-nav">
+        <button data-action="navigate" data-view="briefing" class="nav-item active" aria-label="今日简报" aria-current="page"><img src="/app/assets/icons/house.svg" alt=""><span class="nav-label">今日简报</span><span class="nav-label-short" aria-hidden="true">简报</span></button>
+        <button data-action="navigate" data-view="agents" class="nav-item" aria-label="Agents"><img src="/app/assets/icons/robot.svg" alt=""><span class="nav-label">Agents</span><span class="nav-label-short" aria-hidden="true">智能体</span></button>
+        <button data-action="navigate" data-view="evidence" class="nav-item" aria-label="Evidence"><img src="/app/assets/icons/database.svg" alt=""><span class="nav-label">Evidence</span><span class="nav-label-short" aria-hidden="true">证据</span></button>
+        <button data-action="navigate" data-view="approvals" class="nav-item" aria-label="Approvals"><img src="/app/assets/icons/shield-check.svg" alt=""><span class="nav-label">Approvals</span><span class="nav-label-short" aria-hidden="true">审批</span><span id="approval-nav-count" class="nav-count" hidden>0</span></button>
+        <button data-action="navigate" data-view="accounts" class="nav-item" aria-label="Connections"><img src="/app/assets/icons/key.svg" alt=""><span class="nav-label">Connections</span><span class="nav-label-short" aria-hidden="true">连接</span></button>
+        <button data-action="navigate" data-view="automations" class="nav-item" aria-label="Automations"><img src="/app/assets/icons/gear-six.svg" alt=""><span class="nav-label">Automations</span><span class="nav-label-short" aria-hidden="true">自动化</span></button>
+        <button data-action="navigate" data-view="audit" class="nav-item" aria-label="Audit"><img src="/app/assets/icons/clipboard-text.svg" alt=""><span class="nav-label">Audit</span><span class="nav-label-short" aria-hidden="true">审计</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <button data-action="open-connection" class="account-button">
+          <span class="account-avatar">L</span>
+          <span><strong id="account-name">Local Runtime</strong><small id="account-role">未连接</small></span>
+          <span id="connection-dot" class="connection-dot"></span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="workspace" data-ui-region="workspace">
+      <header class="topbar" data-ui-region="scope-toolbar">
+        <div class="platform-tabs" aria-label="平台">
+          <button data-action="select-platform" data-platform="amazon" class="platform-tab active"><img src="/app/assets/brands/amazon.svg" alt=""><span>Amazon</span></button>
+          <button data-action="select-platform" data-platform="shopify" class="platform-tab"><img src="/app/assets/brands/shopify.svg" alt=""><span>Shopify</span></button>
+          <button data-action="select-platform" data-platform="walmart" class="platform-tab"><img src="/app/assets/brands/walmart-spark.svg" alt=""><span>Walmart</span></button>
+          <button data-action="select-platform" data-platform="tiktok_shop" class="platform-tab"><img src="/app/assets/brands/tiktok.svg" alt=""><span>TikTok Shop</span></button>
+        </div>
+        <div class="topbar-meta">
+          <span id="demo-badge" class="demo-badge" hidden>DEMO DATA</span>
+          <span id="live-indicator" class="live-indicator" data-status="disconnected">未连接</span>
+          <div class="theme-switch" role="group" aria-label="界面主题">
+            <button data-action="set-theme" data-theme-value="light" class="theme-option active" aria-pressed="true" title="使用 Light 主题">Light</button>
+            <button data-action="set-theme" data-theme-value="dark" class="theme-option" aria-pressed="false" title="使用 Dark 主题">Dark</button>
+          </div>
+          <div class="locale-switch" role="group" aria-label="界面语言">
+            <button data-action="set-locale" data-locale-value="zh-CN" class="locale-option active" aria-pressed="true" title="使用中文">中文</button>
+            <button data-action="set-locale" data-locale-value="en" class="locale-option" aria-pressed="false" title="Use English">EN</button>
+            <button data-action="set-locale" data-locale-value="ja" class="locale-option" aria-pressed="false" title="日本語を使用">日本語</button>
+          </div>
+          <span class="today"><img src="/app/assets/icons/calendar-dots.svg" alt=""><span id="today-label"></span></span>
+          <button data-action="open-connection" id="connection-btn" class="quiet-button" aria-label="连接 Runtime"><img src="/app/assets/icons/key.svg" alt=""><span>连接 Runtime</span></button>
+        </div>
+      </header>
+
+      <main>
+        <div id="demo-banner" class="demo-banner" role="note" hidden><strong>当前为 Demo 租户</strong><span>所有指标、Evidence、Agent 结论和审批均为演示数据，不可用于真实经营决策。</span></div>
+        <div id="notice" class="notice" role="status">连接 Runtime 后显示真实经营数据。</div>
+
+        <section id="view-briefing" class="view active" data-view-panel="briefing" aria-labelledby="briefing-title">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">今日简报</p>
+              <h1 id="briefing-title">早上好，今天先看 <span id="briefing-platform-name">Amazon</span> 的经营信号</h1>
+              <p id="briefing-summary" class="heading-summary">连接后，Agent 会把真实 Evidence 汇总为需要你决定的经营事项。</p>
+            </div>
+            <div class="heading-actions">
+              <button data-action="refresh" id="refresh-btn" class="primary-button" disabled><img src="/app/assets/icons/arrows-clockwise.svg" alt=""><span>查看今日简报</span></button>
+              <button data-action="navigate" data-view="agents" class="secondary-button">开始周度复盘</button>
+            </div>
+          </div>
+
+          <div class="briefing-layout">
+            <div class="briefing-main" data-ui-region="canvas">
+              <section class="performance-section" aria-labelledby="performance-title">
+                <div class="section-title-row">
+                  <div><h2 id="performance-title">真实 Evidence 趋势</h2><span id="evidence-range">尚未连接</span></div>
+                  <span id="evidence-freshness" class="data-freshness">等待数据</span>
+                </div>
+                <div id="metric-summary" class="metric-summary" aria-live="polite"></div>
+                <div id="chart-controls" class="chart-controls" aria-label="选择趋势指标"></div>
+                <div class="chart-stage">
+                  <canvas id="trend-chart" width="900" height="260" aria-label="经营指标趋势图"></canvas>
+                  <div id="chart-empty" class="designed-empty">
+                    <img src="/app/assets/icons/chart-line-up.svg" alt="">
+                    <strong>还没有可绘制的经营指标</strong>
+                    <span>导入 Amazon Business、Ads 或 FBA Inventory 报表后，这里只显示真实观测值。</span>
+                    <button data-action="navigate" data-view="evidence" class="text-button">导入 Evidence</button>
+                  </div>
+                </div>
+                <table id="chart-table" class="sr-only"><caption>当前趋势数据</caption><thead><tr><th>观察时间</th><th>数值</th></tr></thead><tbody></tbody></table>
+              </section>
+
+              <section class="agent-brief-section" aria-labelledby="agent-brief-title">
+                <div class="section-title-row">
+                  <div><h2 id="agent-brief-title">Agent Brief</h2><span>基于证据的关键发现，按影响优先</span></div>
+                  <button data-action="navigate" data-view="agents" class="text-button">查看全部 Runs</button>
+                </div>
+                <div id="priority-list" class="priority-list"></div>
+              </section>
+
+              <footer class="approval-guardrail"><img src="/app/assets/icons/shield-check.svg" alt=""><span>所有外部动作都必须经过授权；Agent 不会绕过审批直接执行。</span></footer>
+            </div>
+
+            <aside class="decision-rail" data-ui-region="contextual-detail" aria-label="需要你决定">
+              <section class="decision-section">
+                <div class="decision-heading"><div><p>需要你决定</p><h2>待审批 <span id="approval-count">0</span> 项行动</h2></div><button data-action="navigate" data-view="approvals" class="icon-button" aria-label="查看全部审批"><img src="/app/assets/icons/caret-right.svg" alt=""></button></div>
+                <div id="briefing-approvals" class="decision-list"></div>
+              </section>
+              <section class="agent-roster-section">
+                <div class="decision-heading"><div><p>运行状态</p><h2>Agent 协作中</h2></div></div>
+                <div id="agent-roster" class="agent-roster"></div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section id="view-evidence" class="view" data-view-panel="evidence" aria-labelledby="evidence-title">
+          <div class="page-heading compact"><div><p class="kicker">Evidence Center</p><h1 id="evidence-title">导入真实数据</h1><p class="heading-summary">文件经过字段验证、PII/密钥拦截和租户隔离后才会进入 Agent 工作流。</p></div></div>
+          <div class="tool-layout">
+            <section class="tool-panel form-panel">
+              <form id="evidence-form">
+                <div class="form-grid">
+                  <label>平台<select id="evidence-platform" required></select></label>
+                  <label>报表类型<select id="evidence-type" required></select></label>
+                  <label>观察时间<input id="evidence-observed" type="datetime-local" required></label>
+                  <label>工作表（可选）<input id="evidence-sheet" type="text" placeholder="XLSX sheet name"></label>
+                </div>
+                <label class="file-drop"><img src="/app/assets/icons/upload-simple.svg" alt=""><span><strong>选择真实 CSV、TSV 或 XLSX</strong><small>文件不会离开当前 Runtime。</small></span><input id="evidence-file" type="file" accept=".csv,.tsv,.txt,.xlsx" required></label>
+                <button data-action="upload-evidence" class="primary-button" type="submit">上传并验证</button>
+              </form>
+            </section>
+            <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Imported</p><h2>已验证 Evidence</h2></div></div><div id="evidence-list" class="data-list"></div></section>
+          </div>
+          <section class="metric-observations-section" aria-labelledby="metric-observations-title">
+            <div class="section-title-row"><div><h2 id="metric-observations-title">Metric Observations</h2><span>从已验证 Evidence 物化；每个数值都保留原始来源、周期和质量信号。</span></div></div>
+            <div class="metric-observations-layout">
+              <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Normalized</p><h2>指标观测</h2></div></div><div id="metric-observation-list" class="metric-observation-list" aria-live="polite"></div></section>
+              <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Materialization</p><h2>物化任务</h2></div></div><div id="metric-materialization-list" class="metric-materialization-list" aria-live="polite"></div></section>
+            </div>
+          </section>
+        </section>
+
+        <section id="view-agents" class="view" data-view-panel="agents" aria-labelledby="agents-title">
+          <div class="page-heading compact"><div><p class="kicker">Agent Operations</p><h1 id="agents-title">Weekly Ops</h1><p class="heading-summary">选择已发布的协作图与真实输入，交给平台专家、跨平台 Controller、Manager 和 Reviewer 协作。</p></div></div>
+          <section class="agent-graph-section" aria-labelledby="agent-graphs-title">
+            <div class="section-title-row"><div><h2 id="agent-graphs-title">Published Agent Graphs</h2><span>图由管理员通过 API 发布；当前页面只允许选择已发布版本运行。</span></div></div>
+            <div id="agent-graph-list" class="agent-graph-list" aria-live="polite"></div>
+          </section>
+          <div class="tool-layout">
+            <section class="tool-panel form-panel">
+              <form id="run-form">
+                <label>本次目标<textarea id="run-objective" rows="3" required>找出本周最重要、可由证据支持的经营行动。</textarea></label>
+                <fieldset><legend>选择已发布协作图</legend><div id="run-graph-options" class="check-list"></div></fieldset>
+                <fieldset><legend>选择 Evidence</legend><div id="run-evidence-options" class="check-list"></div></fieldset>
+                <fieldset><legend>选择 Metric Observations（可选）</legend><div id="run-metric-options" class="check-list"></div></fieldset>
+                <p id="run-permission-reason" class="permission-reason" hidden></p>
+                <button data-action="create-run" class="primary-button" type="submit"><img src="/app/assets/icons/play.svg" alt="">创建 Agent Run</button>
+              </form>
+            </section>
+            <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Run History</p><h2>Agent Runs</h2></div></div><div id="run-list" class="data-list"></div></section>
+          </div>
+        </section>
+
+        <section id="view-approvals" class="view" data-view-panel="approvals" aria-labelledby="approvals-title">
+          <div class="page-heading compact"><div><p class="kicker">Human Control</p><h1 id="approvals-title">审批中心</h1><p class="heading-summary">高风险外部动作必须由另一位具备权限的用户审批，随后才允许 Operator 执行。</p></div></div>
+          <section class="tool-panel wide proposal-panel"><div class="panel-heading"><div><p class="kicker">Proposals</p><h2>行动提案</h2><span>仅从已完成的 Daily Ops 优先事项创建；所有外部写入都先经过审批。</span></div></div>
+            <form id="proposal-form" class="form-grid proposal-form">
+              <label>Daily Ops 运行<select id="proposal-run" required></select></label><label>优先事项<select id="proposal-priority" required></select></label>
+              <label>操作<select id="proposal-operation" required><option value="human.review">人工复核</option><option value="shopify.sync_products">同步 Shopify 商品</option><option value="amazon_spapi.import_report">导入 Amazon 报表</option><option value="amazon_ads.campaign_update">Amazon Ads 更新 Campaign（当前被 Adapter Lock 阻断）</option></select></label>
+              <label>风险<select id="proposal-risk"><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select></label>
+              <label>回滚方案<input id="proposal-rollback" required placeholder="恢复原值"></label>
+              <label>过期时间<input id="proposal-expires" type="datetime-local" required></label><label class="full-width">操作参数（JSON）<textarea id="proposal-payload" rows="4" required>{"instructions":"复核该 Daily Ops 优先事项，并记录最终经营决定。"}</textarea><small>切换操作时会载入该平台的有效参数模板；只填写账户标识，不要填写密钥。</small></label>
+              <p id="proposal-permission" class="permission-reason" hidden></p><button class="primary-button" data-action="create-proposal" type="submit">创建提案</button>
+            </form>
+            <div id="proposal-list" class="data-list" aria-live="polite"></div>
+          </section>
+          <section class="tool-panel wide"><div class="panel-heading"><div><p class="kicker">Legacy Actions</p><h2>审批队列</h2></div></div><div id="approval-list" class="data-list"></div></section>
+        </section>
+
+        <section id="view-accounts" class="view" data-view-panel="accounts" aria-labelledby="accounts-title">
+          <div class="page-heading compact">
+            <div><p class="kicker">Connections Hub</p><h1 id="accounts-title">连接与 API</h1><p class="heading-summary">在一个位置管理当前 Runtime 会话、Marketplace API、模型 API 准备度和报告同步配置。</p></div>
+          </div>
+          <div class="connection-tabs" role="tablist" aria-label="连接设置分类">
+            <button id="connection-tab-runtime" data-action="select-connection-section" data-connection-section="runtime" class="connection-tab active" role="tab" aria-controls="connection-panel-runtime" aria-selected="true">Runtime API</button>
+            <button id="connection-tab-marketplaces" data-action="select-connection-section" data-connection-section="marketplaces" class="connection-tab" role="tab" aria-controls="connection-panel-marketplaces" aria-selected="false">Marketplace APIs</button>
+            <button id="connection-tab-ai" data-action="select-connection-section" data-connection-section="ai" class="connection-tab" role="tab" aria-controls="connection-panel-ai" aria-selected="false">AI Provider</button>
+            <button id="connection-tab-reports" data-action="select-connection-section" data-connection-section="reports" class="connection-tab" role="tab" aria-controls="connection-panel-reports" aria-selected="false">Reports & Sync</button>
+          </div>
+
+          <section id="connection-panel-runtime" class="connection-panel active" data-connection-panel="runtime" role="tabpanel" aria-labelledby="connection-tab-runtime">
+            <div class="connection-overview-grid">
+              <section class="tool-panel runtime-session-panel">
+                <div class="panel-heading"><div><p class="kicker">Runtime API</p><h2>当前会话</h2><span>API Key 只保存在当前页面内存，不写入浏览器存储或 Runtime 数据库。</span></div><button data-action="open-connection" class="primary-button">连接或更换 Key</button></div>
+                <div id="runtime-session-summary" class="runtime-session-summary" aria-live="polite"></div>
+              </section>
+              <section class="tool-panel api-security-panel">
+                <div class="panel-heading"><div><p class="kicker">Secret boundary</p><h2>密钥安全边界</h2></div></div>
+                <ul class="connection-guidance-list">
+                  <li>Runtime API Key 只存在于当前页面内存；刷新或断开后清除。</li>
+                  <li>Marketplace 与模型密钥由部署环境或 Secret Manager 提供。</li>
+                  <li>此页面仅保存环境变量引用和非敏感连接配置。</li>
+                </ul>
+              </section>
+            </div>
+          </section>
+
+          <section id="connection-panel-marketplaces" class="connection-panel" data-connection-panel="marketplaces" role="tabpanel" aria-labelledby="connection-tab-marketplaces" hidden>
+            <div class="section-title-row connection-section-heading"><div><h2>Marketplace APIs</h2><span>连接 Amazon SP-API、Amazon Ads 与 Shopify；保存环境变量引用，不保存密钥值。</span></div><button data-action="open-connector-form" id="add-connector-btn" class="primary-button">添加连接</button></div>
+            <p class="provider-smoke-disclosure">Amazon SP-API 与 Shopify 的连通性验证会执行最小真实读取请求，并将租户内结果写入审计记录；Amazon Ads 继续使用下方专用准入检查。</p>
+            <section class="tool-panel wide"><div id="connector-permission" class="permission-note" hidden></div><div id="connector-list" class="connector-list" aria-live="polite"></div></section>
+            <section class="accounts-ads-gates" aria-labelledby="ads-gates-title">
+              <div class="section-title-row"><div><h2 id="ads-gates-title">Amazon Ads 准入</h2><span>检查授权、Profile、Sponsored Products 读取权限与外部审批；不会创建、修改或暂停 Campaign。</span></div><button data-action="open-ads-capability-form" id="add-ads-capability-btn" class="primary-button">运行准入检查</button></div>
+              <div id="ads-capability-permission" class="permission-note" hidden></div>
+              <div id="ads-capability-list" class="ads-capability-list" aria-live="polite"></div>
+              <div class="ads-adapter-lock" aria-labelledby="ads-adapter-lock-title">
+                <div class="section-title-row"><div><h3 id="ads-adapter-lock-title">Adapter Lock</h3><span>写入适配器单独评估；当前版本只允许读取和展示状态。</span></div></div>
+                <div id="ads-adapter-status" aria-live="polite"></div>
+              </div>
+            </section>
+          </section>
+
+          <section id="connection-panel-ai" class="connection-panel" data-connection-panel="ai" role="tabpanel" aria-labelledby="connection-tab-ai" hidden>
+            <section class="tool-panel wide ai-provider-panel">
+              <div class="panel-heading"><div><p class="kicker">AI Provider</p><h2>模型 API 准备度</h2><span>这里只读取部署环境中的配置存在性，不会接收、保存或回显模型密钥。</span></div><button data-action="refresh-pilot" class="secondary-button">重新检查</button></div>
+              <div id="ai-provider-status" class="ai-provider-status" aria-live="polite"></div>
+              <section class="provider-smoke-section" aria-labelledby="openai-smoke-title">
+                <div class="provider-smoke-heading"><div><p class="kicker">Live verification</p><h3 id="openai-smoke-title">OpenAI 连通性验证</h3><span>使用部署共享的 API Key 与模型配置；operator 或更高角色触发最小真实付费调用。不会保存或显示模型输出，结果按租户持久化并进入审计。</span></div></div>
+                <div id="openai-smoke-status" aria-live="polite"></div>
+              </section>
+              <div class="deployment-guide">
+                <h3>部署环境配置</h3>
+                <p>在运行 Pilot 的 Secret Manager 或进程环境中设置以下变量，然后重启 Pilot 并重新检查：</p>
+                <dl><div><dt>API credential</dt><dd><code>OPENAI_API_KEY</code></dd></div><div><dt>Model</dt><dd><code>EAI_OPENAI_MODEL</code></dd></div></dl>
+                <p class="permission-note">Presence 只表示配置项存在；使用上方“运行连通性验证”才能通过最小真实调用确认访问能力。密钥仍由部署环境管理。</p>
+                <button data-action="navigate" data-view="automations" class="text-button">查看 Pilot Runtime 详情</button>
+              </div>
+            </section>
+          </section>
+
+          <section id="connection-panel-reports" class="connection-panel" data-connection-panel="reports" role="tabpanel" aria-labelledby="connection-tab-reports" hidden>
+            <section class="accounts-recipes" aria-labelledby="recipes-title">
+              <div class="section-title-row"><div><h2 id="recipes-title">Report Recipes</h2><span>保存可复现的 Amazon 报告配置；远程采集由 L3 Sync 执行。</span></div><button data-action="open-recipe-form" id="add-recipe-btn" class="primary-button">添加 Recipe</button></div>
+              <div id="recipe-permission" class="permission-note" hidden></div>
+              <div id="recipe-list" class="recipe-list" aria-live="polite"></div>
+            </section>
+            <section class="accounts-syncs" aria-labelledby="syncs-title">
+              <div class="section-title-row"><div><h2 id="syncs-title">Sync Activity</h2><span>由 L3 Worker 异步执行并轮询；排队不表示报表已完成。</span></div></div>
+              <div id="sync-list" class="sync-list" aria-live="polite"></div>
+            </section>
+          </section>
+        </section>
+
+        <section id="view-automations" class="view" data-view-panel="automations" aria-labelledby="automations-title">
+          <div class="page-heading compact"><div><p class="kicker">Automation</p><h1 id="automations-title">计划与后台任务</h1><p class="heading-summary">Schedule 只选择最新真实 Evidence，Worker 使用持久化队列、租约和重试。</p></div></div>
+          <section class="tool-panel wide pilot-runtime-panel" aria-labelledby="pilot-runtime-title">
+            <div class="panel-heading"><div><p class="kicker">One-command Pilot</p><h2 id="pilot-runtime-title">Pilot Runtime</h2><span>一条命令统一运行 API 与六个后台 Worker；此处只读取真实持久心跳，不从浏览器启动或停止进程。</span></div><div class="panel-heading-actions"><button data-action="open-connection-settings" data-connection-section="ai" class="text-button">连接设置</button><button data-action="refresh-pilot" class="secondary-button">刷新运行状态</button></div></div>
+            <div id="pilot-runtime-summary" class="pilot-runtime-summary" aria-live="polite"></div>
+            <div class="pilot-runtime-grid"><section><h3>Worker 心跳</h3><div id="pilot-worker-list" class="pilot-worker-list"></div></section><section><h3>当前租户准备度</h3><div id="pilot-readiness-list" class="pilot-readiness-list"></div></section></div>
+          </section>
+          <section class="tool-panel wide live-mission-panel" aria-labelledby="live-mission-title">
+            <div class="panel-heading"><div><p class="kicker">Live Mission Control</p><h2 id="live-mission-title">实时运行状态</h2><span id="live-status-copy">连接 Runtime 后开始接收租户内的实时状态。</span></div><div class="live-heading-actions"><span id="live-status-label" class="live-status-label">未连接</span><button id="live-retry-btn" data-action="retry-live" class="secondary-button" hidden>立即重试</button></div></div>
+            <div id="live-event-list" class="live-event-list" aria-live="polite"></div>
+          </section>
+          <div class="tool-layout">
+            <section class="tool-panel form-panel">
+              <form id="schedule-form">
+                <div class="form-grid">
+                  <label>名称<input id="schedule-name" required placeholder="Amazon weekly review"></label>
+                  <label>间隔（分钟）<input id="schedule-interval" type="number" min="15" max="43200" value="10080" required></label>
+                  <label>平台<select id="schedule-platform" required></select></label>
+                  <label>Evidence 类型<select id="schedule-report-type" required></select></label>
+                  <label>首次运行<input id="schedule-next-run" type="datetime-local" required></label>
+                </div>
+                <label>目标<textarea id="schedule-objective" rows="2" required>审查最新导入的数据并生成本周行动计划。</textarea></label>
+                <button data-action="create-schedule" class="primary-button" type="submit"><img src="/app/assets/icons/calendar-dots.svg" alt="">创建 Schedule</button>
+              </form>
+              <div id="schedule-list" class="data-list"></div>
+            </section>
+            <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Workers</p><h2>后台任务</h2></div></div><div id="job-list" class="data-list"></div></section>
+          </div>
+          <section class="daily-ops-section" aria-labelledby="daily-ops-title">
+            <div class="section-title-row"><div><h2 id="daily-ops-title">Daily Ops</h2><span>按本地日期与时区运行；只使用已持久化 Evidence，缺失时保留明确空态。</span></div></div>
+            <div class="tool-layout">
+              <section class="tool-panel form-panel">
+                <form id="daily-ops-form">
+                  <div class="form-grid">
+                    <label>名称<input id="daily-ops-name" required placeholder="Amazon daily pulse"></label>
+                    <label>本地时间<input id="daily-ops-time" type="time" required value="08:00"></label>
+                    <label>时区<input id="daily-ops-timezone" required></label>
+                    <label>Agent Graph 版本<select id="daily-ops-graph" required></select></label>
+                    <label>最大来源年龄（小时）<input id="daily-ops-max-age" type="number" min="1" max="8760" value="48" required></label>
+                  </div>
+                  <label>Evidence report type<select id="daily-ops-evidence" required></select></label>
+                  <label>目标<textarea id="daily-ops-objective" rows="2" required>检查最新经营信号并生成今日行动建议。</textarea></label>
+                  <p id="daily-ops-permission-reason" class="permission-reason" hidden></p>
+                  <button data-action="create-daily-ops" class="primary-button" type="submit"><img src="/app/assets/icons/calendar-dots.svg" alt="">创建 Daily Ops</button>
+                </form>
+              </section>
+              <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Schedules</p><h2>Daily Ops 计划</h2></div></div><div id="daily-ops-schedule-list" class="data-list"></div></section>
+            </div>
+            <section class="tool-panel"><div class="panel-heading"><div><p class="kicker">Runs</p><h2>Daily Ops 运行</h2></div></div><div id="daily-ops-run-list" class="data-list"></div></section>
+          </section>
+        </section>
+
+        <section id="view-audit" class="view" data-view-panel="audit" aria-labelledby="audit-title">
+          <div class="page-heading compact"><div><p class="kicker">Audit Trail</p><h1 id="audit-title">审计时间线</h1><p class="heading-summary">每次导入、Agent 执行、审批和外部动作都保留租户内可追溯记录。</p></div></div>
+          <section class="tool-panel wide assurance-panel" aria-labelledby="assurance-title">
+            <div class="panel-heading"><div><p class="kicker">Eval · Security · Restore</p><h2 id="assurance-title">Assurance Center</h2><span>Eval 验证真实 Reviewer/评测覆盖；Security 验证数据库、租户约束和审计哈希链。</span></div><div class="assurance-actions"><button data-action="run-assurance" data-kind="eval" class="secondary-button">运行 Eval</button><button data-action="run-assurance" data-kind="security" class="primary-button">运行 Security</button></div></div>
+            <p id="assurance-permission" class="permission-reason" hidden></p>
+            <div class="recovery-cli-note"><strong>Restore 只允许本地 CLI</strong><span>浏览器不会覆盖数据库。使用经过校验的 `opc-ecommerce backup` / `restore` 后，恢复演练会作为真实 Assurance 记录出现。</span></div>
+            <div id="assurance-list" class="assurance-list" aria-live="polite"></div>
+          </section>
+          <section class="tool-panel wide audit-timeline-panel"><div class="panel-heading"><div><p class="kicker">Hash chained</p><h2>不可变审计事件</h2><span>每条事件绑定前一条哈希；完整性由 Security Assurance 复核。</span></div></div><div id="audit-list" class="data-list"></div></section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="connection-dialog" class="connection-dialog">
+    <div class="dialog-head"><div><p class="kicker">Secure local session</p><h2>连接 Runtime</h2></div><button data-action="close-dialog" data-dialog="connection-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <p>API 密钥仅保存在当前页面内存，刷新或断开后立即清除。</p>
+    <label>API 密钥<input id="api-key" type="password" autocomplete="off" placeholder="eai_…" aria-label="API 密钥"></label>
+    <div class="dialog-actions"><button data-action="disconnect" id="disconnect-btn" class="secondary-button" disabled>断开</button><button data-action="connect" id="connect-btn" class="primary-button">安全连接</button></div>
+  </dialog>
+
+  <dialog id="detail-dialog" class="detail-dialog">
+    <div class="dialog-head"><div><p class="kicker">Evidence-backed detail</p><h2 id="detail-title">详情</h2></div><button data-action="close-dialog" data-dialog="detail-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <pre id="detail-content"></pre>
+  </dialog>
+  <dialog id="proposal-decision-dialog" class="detail-dialog">
+    <div class="dialog-head"><div><p class="kicker">Human control</p><h2>提案审批</h2></div><button data-action="close-dialog" data-dialog="proposal-decision-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <p class="dialog-copy">决定会绑定当前提案版本与内容哈希，提交后不可修改。</p>
+    <form id="proposal-decision-form">
+      <input id="proposal-decision-id" type="hidden"><input id="proposal-decision-version" type="hidden">
+      <label>决定<select id="proposal-decision" required><option value="approve">批准</option><option value="reject">拒绝</option><option value="revision_required">要求修改</option></select></label>
+      <label>审批备注<textarea id="proposal-decision-comment" required minlength="1" maxlength="2000" rows="4" placeholder="说明判断依据或需要修改的内容"></textarea></label>
+      <div class="dialog-actions"><button class="primary-button" type="submit">提交决定</button></div>
+    </form>
+  </dialog>
+  <dialog id="proposal-revision-dialog" class="detail-dialog">
+    <div class="dialog-head"><div><p class="kicker">Versioned proposal</p><h2>修订提案</h2></div><button data-action="close-dialog" data-dialog="proposal-revision-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <p class="dialog-copy">保存会创建不可变的新版本，并使旧版本审批失效。</p>
+    <form id="proposal-revision-form">
+      <input id="proposal-revision-id" type="hidden"><input id="proposal-revision-version" type="hidden">
+      <label>标题<input id="proposal-revision-title" required minlength="1" maxlength="200"></label>
+      <label>为什么现在要做<textarea id="proposal-revision-rationale" required minlength="1" maxlength="2000" rows="3"></textarea></label>
+      <label>预期影响<textarea id="proposal-revision-impact" required minlength="1" maxlength="2000" rows="2"></textarea></label>
+      <label>回滚方案<textarea id="proposal-revision-rollback" required minlength="3" maxlength="2000" rows="2"></textarea></label>
+      <div class="form-grid">
+        <label>操作<select id="proposal-revision-operation" required><option value="human.review">人工复核</option><option value="shopify.sync_products">同步 Shopify 商品</option><option value="amazon_spapi.import_report">导入 Amazon 报表</option><option value="amazon_ads.campaign_update">Amazon Ads Campaign 更新（被阻断）</option></select></label>
+        <label>风险<select id="proposal-revision-risk" required><option>low</option><option>medium</option><option>high</option><option>critical</option></select></label>
+        <label>过期时间<input id="proposal-revision-expires" type="datetime-local" required></label>
+      </div>
+      <label>操作参数（JSON）<textarea id="proposal-revision-payload" required rows="5"></textarea><small>不要填写密钥或凭证值。</small></label>
+      <div class="dialog-actions"><button class="primary-button" type="submit">保存新版本</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="connector-dialog" class="connector-dialog">
+    <div class="dialog-head"><div><p class="kicker">Marketplace connection</p><h2 id="connector-dialog-title">添加账户</h2></div><button data-action="close-dialog" data-dialog="connector-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <p class="dialog-copy">填写平台账户标识和环境变量名称。不要输入任何密钥值。</p>
+    <form id="connector-form">
+      <input id="connector-id" type="hidden">
+      <label>Provider<select id="connector-provider" required></select></label>
+      <label>外部账户 ID<input id="connector-external-account-id" required autocomplete="off" placeholder="Seller ID 或店铺账户 ID"></label>
+      <div id="amazon-connector-fields" class="connector-fields">
+        <label>Amazon region<select id="connector-region"></select></label>
+        <fieldset><legend>Marketplaces</legend><div id="connector-marketplaces" class="check-list"></div></fieldset>
+        <div class="form-grid"><label>LWA client ID 环境变量<input id="amazon-lwa-client-id-ref" autocomplete="off" placeholder="AMAZON_LWA_CLIENT_ID"></label><label>LWA client secret 环境变量<input id="amazon-lwa-client-secret-ref" autocomplete="off" placeholder="AMAZON_LWA_CLIENT_SECRET"></label><label>Refresh token 环境变量<input id="amazon-refresh-token-ref" autocomplete="off" placeholder="AMAZON_REFRESH_TOKEN"></label></div>
+      </div>
+      <div id="amazon-ads-connector-fields" class="connector-fields" hidden>
+        <div class="form-grid"><label>Amazon Ads region<select id="amazon-ads-region"><option value="na">na</option><option value="eu">eu</option><option value="fe">fe</option></select></label><label>Advertising profile ID<input id="amazon-ads-profile-id" inputmode="numeric" pattern="[0-9]{1,32}" maxlength="32" autocomplete="off" placeholder="1234567890"></label></div>
+        <div class="form-grid"><label>LWA client ID 环境变量<input id="amazon-ads-lwa-client-id-ref" autocomplete="off" placeholder="AMAZON_ADS_LWA_CLIENT_ID"></label><label>LWA client secret 环境变量<input id="amazon-ads-lwa-client-secret-ref" autocomplete="off" placeholder="AMAZON_ADS_LWA_CLIENT_SECRET"></label><label>Refresh token 环境变量<input id="amazon-ads-refresh-token-ref" autocomplete="off" placeholder="AMAZON_ADS_REFRESH_TOKEN"></label></div>
+      </div>
+      <div id="shopify-connector-fields" class="connector-fields" hidden>
+        <div class="form-grid"><label>Shopify domain<input id="shopify-domain" autocomplete="off" placeholder="store.myshopify.com"></label><label>API version<input id="shopify-api-version" autocomplete="off" placeholder="2025-01"></label></div>
+        <label>Access token 环境变量<input id="shopify-access-token-ref" autocomplete="off" placeholder="SHOPIFY_ACCESS_TOKEN"></label>
+      </div>
+      <div class="dialog-actions"><button data-action="save-connector" class="primary-button" type="submit">保存账户</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="ads-capability-dialog" class="ads-capability-dialog">
+    <div class="dialog-head"><div><p class="kicker">Amazon Ads 准入</p><h2>运行真实准入检查</h2></div><button data-action="close-dialog" data-dialog="ads-capability-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <p class="dialog-copy">将使用已保存的环境变量引用验证 Ads 访问能力。可选填写审批或工单号，便于审计追踪。</p>
+    <form id="ads-capability-form">
+      <label>Amazon Ads 账户<select id="ads-capability-account" required></select></label>
+      <label>审批／工单 reference（可选）<input id="ads-capability-attestation-reference" maxlength="256" pattern="[A-Za-z0-9][A-Za-z0-9._:/#-]{2,255}" autocomplete="off" placeholder="OPS-1234"><small>这是管理员提供的外部批准引用，不是 Amazon API 自动签发的证明。</small></label>
+      <div class="dialog-actions"><button data-action="run-ads-capability-check" class="primary-button" type="submit">运行准入检查</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="recipe-dialog" class="recipe-dialog">
+    <div class="dialog-head"><div><p class="kicker">Report Recipes</p><h2 id="recipe-dialog-title">添加 Recipe</h2></div><button data-action="close-dialog" data-dialog="recipe-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
+    <p class="dialog-copy">Recipe 只会从该账户已配置的 marketplaces 中选择。L2 仅保存配置，不会调用 Amazon。</p>
+    <form id="recipe-form">
+      <input id="recipe-id" type="hidden">
+      <label>Amazon account<select id="recipe-connector-account" required></select></label>
+      <label>名称<input id="recipe-name" required autocomplete="off" placeholder="US business report"></label>
+      <label>Recipe type<select id="recipe-type" required></select></label>
+      <fieldset><legend>Marketplaces</legend><div id="recipe-marketplaces" class="check-list"></div></fieldset>
+      <div class="form-grid"><label>Cadence（分钟）<input id="recipe-interval" type="number" min="60" max="43200" value="1440" required></label><label>Lookback（天）<input id="recipe-lookback" type="number" min="1" max="30" value="7" required></label><label>Next run<input id="recipe-next-run" type="datetime-local" required></label></div>
+      <label class="switch-field"><input id="recipe-enabled" type="checkbox" checked><span>启用此 Recipe</span></label>
+      <div class="dialog-actions"><button data-action="save-recipe" class="primary-button" type="submit">保存 Recipe</button></div>
+    </form>
+  </dialog>
+
+  <script src="/app/i18n.js" defer></script>
+  <script src="/app/app.js" defer></script>
+</body>
+</html>

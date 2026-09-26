@@ -1,0 +1,34 @@
+name: Link Checker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  link-checker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check internal links (offline)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # --offline verifies that relative links resolve to real files,
+          # without hitting the network (no flaky external-link failures).
+          args: >-
+            --offline --no-progress
+            README.md
+            README_ZH.md
+            README_JA.md
+            src/**/*.md
+            i18n/en/src/**/*.md
+            i18n/ja/src/**/*.md
+            roadmap/**/*.md
+            notebooks/**/*.md
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

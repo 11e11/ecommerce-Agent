@@ -1,0 +1,130 @@
+{
+  "artifacts": {
+    "design_evidence": {
+      "byte_count": 5495673,
+      "file_count": 25,
+      "name": "design_evidence",
+      "tree_sha256": "5244a5085dc1631bd7aa4b9c79a522c3bd080ee7607b3b5be327b631ece1a17b"
+    },
+    "dist": {
+      "byte_count": 6565457,
+      "file_count": 154,
+      "name": "dist",
+      "tree_sha256": "dd0c57161ccdba5a74862682b9e13b9f48fd1dd0c6e450b8e352f6dcfadd6958"
+    },
+    "package_sources": {
+      "byte_count": 950881,
+      "file_count": 34,
+      "name": "package_sources",
+      "tree_sha256": "328e21e5f8c186158d70e7d75e9f5b86d614cfe6645fd5ae5e6d42ac8fb1cba1"
+    },
+    "runtime_web_assets": {
+      "byte_count": 14830578,
+      "file_count": 51,
+      "name": "runtime_web_assets",
+      "tree_sha256": "12f873ddada2d2a05aca52b22d38dd98eb83107635491aba0f9de23bc52fb606"
+    },
+    "scripts": {
+      "byte_count": 407316,
+      "file_count": 25,
+      "name": "scripts",
+      "tree_sha256": "be23ee063e4d8cfaf0d3c0b92e1d09819a6538434fc27ee236dcc571fb5d3c13"
+    },
+    "tests": {
+      "byte_count": 580936,
+      "file_count": 37,
+      "name": "tests",
+      "tree_sha256": "105a464fd7032b55b908f6f551ebd52a3027450fc600f7548f13b762477e1963"
+    },
+    "wheel_package_data": {
+      "byte_count": 6565457,
+      "file_count": 154,
+      "name": "wheel_package_data",
+      "tree_sha256": "3d14edb938b4929102f18db94191bf16c5b814c7e434e28ffbf5fe7639e88d7d"
+    }
+  },
+  "contracts": {
+    ".github/workflows/release.yml": {
+      "sha256": "63a9b3bb425e8a38c005a7d7e522e7021589139645cf2bf6a8c9fdf4e9dc5ea6",
+      "size": 9984
+    },
+    ".gitignore": {
+      "sha256": "8b8a083249f59e7e0f62106618632a345751e5a1dbf28d23b99cd40b4735ac27",
+      "size": 3510
+    },
+    "CHANGELOG.md": {
+      "sha256": "c963359861f04a14cae0cb65fb12288bb4abf5585ad846a7db20d3c18be034e9",
+      "size": 21665
+    },
+    "LICENSE": {
+      "sha256": "977372677acaaaa0f419556e5a24d8c869534c25d8f4f8d3db4df888c095bd9d",
+      "size": 6468
+    },
+    "README.md": {
+      "sha256": "32c6c3ca9aac791be92357d044de3c30d58c8661f7eccc0b8042d57c2b7a0bc5",
+      "size": 30866
+    },
+    "design-qa.md": {
+      "sha256": "86d1eb097b9aeeceda1e8f71d7b73a48b73a9c4cd36e7a62863e866ca67c30dd",
+      "size": 13418
+    },
+    "openapi/runtime-api.yaml": {
+      "sha256": "3c3b1c22c7377b59ae7460d875f8e87dd5b905de07528b96fa8c6c4d0c32be65",
+      "size": 174649
+    },
+    "pyproject.toml": {
+      "sha256": "8c9e782985a780568115d53012af88056ee2add90cca5a0e7ad1fdc8ca56dfd1",
+      "size": 1194
+    },
+    "release/v1.3.0-rc.md": {
+      "sha256": "ce40f6ed44764e87a914439f9ff6a38c740f998666a280df6b362aa0c521e2dd",
+      "size": 8367
+    },
+    "roadmap/ui-design-system-l7.md": {
+      "sha256": "24948088dda3f752a56ef4702adbbb50b2a0294cd3bef63e701a44c22761336b",
+      "size": 7517
+    },
+    "roadmap/v1.3-amazon-operator-pilot.md": {
+      "sha256": "54f4cda82b46bf159de6e48246f4cf99586e38a99cc310f9902fac9ea093747c",
+      "size": 7793
+    },
+    "scripts/build_dist.py": {
+      "sha256": "75730dd83e939d7eaf916921a362e4f42bc51265baaaef63eaf49224337abd9e",
+      "size": 26147
+    },
+    "scripts/loop/v1_3_progress.md": {
+      "sha256": "9808e365ab6b52d1ae7e94e6bf7f5833bab230aacec164af758177690ae1a61c",
+      "size": 37516
+    },
+    "scripts/verify_all.py": {
+      "sha256": "b6b1d88bfeccf9bca7f1e17b0972c215d73deae31e8644e946d2aa80f6fbac8b",
+      "size": 69907
+    }
+  },
+  "release": {
+    "channel": "rc",
+    "python_requires": ">=3.10",
+    "runtime_schema_version": 22,
+    "tag": "v1.3.0",
+    "version": "1.3.0"
+  },
+  "required_gates": [
+    "release_manifest_fresh",
+    "dist_fresh",
+    "pytest_full",
+    "verify_all",
+    "cold_wheel_install",
+    "wheel_runtime_smoke",
+    "installed_demo_e2e",
+    "backup_restore_verify",
+    "installed_restore_roundtrip",
+    "browser_design_qa",
+    "tag_matches_version"
+  ],
+  "schema_version": 1,
+  "version_contract": {
+    "openapi": "1.3.0",
+    "package": "1.3.0",
+    "pyproject": "1.3.0"
+  }
+}

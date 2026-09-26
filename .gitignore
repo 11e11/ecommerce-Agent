@@ -245,3 +245,49 @@ i18n/ja/book/
 # via upload-pages-artifact; the committed copy was only ever a stale duplicate.
 # Pages source is GitHub Actions (deploy-pages@v4), not "deploy from branch".
 docs/
+
+# Local-only learning material and generated documentation
+# These files came with the original knowledge-base project but are not part
+# of the ecommerce Agent source repository.
+/artifacts/
+/assets/
+/branding/
+/datasets/
+/examples/
+/i18n/
+/notebooks/
+/src/
+/roadmap/
+/release/
+/maintenance/
+/dist/
+/.claude-plugin/
+/book.toml
+/custom.css
+/lang-switcher.js
+/mermaid-init.js
+/mermaid.min.js
+/README_ZH.md
+/README_JA.md
+/design-qa.md
+/EVOLUTION_LOG.md
+/EVOLUTION_PLAN.md
+/LOOP_DESIGN.md
+/PHASE6_LOOP.md
+/output-format-selfcheck-summary.md
+
+# Checks that only validate the excluded learning/site material
+/tests/test_audit_content.py
+/tests/test_claude_plugin.py
+/tests/test_content_artifacts.py
+/tests/test_distribution.py
+/tests/test_fact_review.py
+/tests/test_m8_market_figures.py
+/tests/test_release_candidate.py
+/tests/test_repo_health.py
+/tests/test_site_meta.py
+/tests/test_watch_sources.py
+/.github/workflows/pages.yml
+/.github/workflows/link-checker.yml
+/.github/workflows/awesome-lint.yml
+/.github/workflows/weekly-health.yml

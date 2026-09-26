@@ -1,1 +1,0 @@
-../../mermaid-init.js

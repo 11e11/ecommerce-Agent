@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- `DeepSeekResponsesProvider`: set `EAI_AGENT_PROVIDER=deepseek` with
+  `DEEPSEEK_API_KEY` and `EAI_DEEPSEEK_MODEL` to run the existing agent
+  workflow through DeepSeek's official Responses endpoint without persisting
+  credentials or sending OpenAI-only request fields.
 - `AnthropicMessagesProvider`: the agent council can run on Claude
   (`EAI_AGENT_PROVIDER=anthropic`, `ANTHROPIC_API_KEY`, `EAI_ANTHROPIC_MODEL`).
   OpenAI stays the default; an unrecognised provider value fails at startup

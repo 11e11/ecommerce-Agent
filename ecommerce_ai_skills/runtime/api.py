@@ -31,6 +31,7 @@ from .ads_adapter_status import AdsAdapterStatusService
 from .agents import (
     AgentProvider,
     AnthropicMessagesProvider,
+    DeepSeekResponsesProvider,
     OpenAIResponsesProvider,
     WeeklyOpsCouncil,
 )
@@ -113,8 +114,10 @@ def _default_agent_provider() -> AgentProvider:
         return OpenAIResponsesProvider()
     if name in {"anthropic", "anthropic_messages"}:
         return AnthropicMessagesProvider()
+    if name in {"deepseek", "deepseek_responses"}:
+        return DeepSeekResponsesProvider()
     raise ValidationError(
-        f"EAI_AGENT_PROVIDER must be 'openai' or 'anthropic', got {name!r}"
+        f"EAI_AGENT_PROVIDER must be 'openai', 'anthropic', or 'deepseek', got {name!r}"
     )
 
 

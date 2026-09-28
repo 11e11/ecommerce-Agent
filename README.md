@@ -5,13 +5,25 @@
 ## 环境要求
 
 - Python 3.10+
-- 可选：OpenAI 或 Anthropic API 凭据
+- 可选：OpenAI、Anthropic 或 DeepSeek API 凭据
 
 ## 安装
 
 ```bash
 pip install -e ".[mcp,xlsx]"
 ```
+
+## 模型配置
+
+默认使用 OpenAI。使用 DeepSeek 时设置：
+
+```bash
+EAI_AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=<YOUR_DEEPSEEK_API_KEY>
+EAI_DEEPSEEK_MODEL=deepseek-flash
+```
+
+API Key 仅从环境变量读取，不写入 SQLite 或审计记录。
 
 ## 本地演示
 

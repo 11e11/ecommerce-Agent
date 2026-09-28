@@ -26,29 +26,36 @@ export EAI_OPENAI_MODEL='<RESPONSES_API_MODEL_WITH_STRUCTURED_OUTPUTS>'
 
 ### Choosing a provider
 
-Two providers ship. OpenAI is the default, so an existing deployment needs no
+Three providers ship. OpenAI is the default, so an existing deployment needs no
 change. Set `EAI_AGENT_PROVIDER` to switch:
 
 | `EAI_AGENT_PROVIDER` | Provider | Required variables |
 |---|---|---|
 | unset, `openai`, `openai_responses` | OpenAI Responses API | `OPENAI_API_KEY`, `EAI_OPENAI_MODEL` |
 | `anthropic`, `anthropic_messages` | Anthropic Messages API | `ANTHROPIC_API_KEY`, `EAI_ANTHROPIC_MODEL` |
+| `deepseek`, `deepseek_responses` | DeepSeek Responses API | `DEEPSEEK_API_KEY`, `EAI_DEEPSEEK_MODEL` |
 
 ```bash
 export EAI_AGENT_PROVIDER='anthropic'
 export ANTHROPIC_API_KEY='<REAL_ANTHROPIC_API_KEY>'
 export EAI_ANTHROPIC_MODEL='<MESSAGES_API_MODEL>'
+
+# Or use DeepSeek's OpenAI-compatible Responses endpoint:
+export EAI_AGENT_PROVIDER='deepseek'
+export DEEPSEEK_API_KEY='<REAL_DEEPSEEK_API_KEY>'
+export EAI_DEEPSEEK_MODEL='deepseek-flash'
 ```
 
 An unrecognised value fails at startup rather than falling back, so a typo
-cannot silently route traffic to a different vendor. Both providers hold
+cannot silently route traffic to a different vendor. All providers hold
 credentials as environment references only, pin their endpoint to the official
 host, and never write the key into SQLite or audit metadata. The provider name
 recorded on each agent run is the one actually used.
 
-Structured output differs by necessity: OpenAI uses a strict `json_schema`
+Structured output differs by necessity: OpenAI and DeepSeek use a `json_schema`
 response format, Anthropic a forced tool whose `input_schema` is the same
-schema. Both reject a reply that is not a valid object, and Anthropic
+schema (OpenAI also enables strict mode). All reject a reply that is not a valid
+object, and Anthropic
 additionally fails a response truncated at `max_tokens` rather than returning a
 partial result that would read as complete.
 

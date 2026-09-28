@@ -297,7 +297,7 @@ def test_unknown_provider_fails_loudly(monkeypatch) -> None:
     from ecommerce_ai_skills.runtime import api
 
     monkeypatch.setenv("EAI_AGENT_PROVIDER", "gemini")
-    with pytest.raises(ValidationError, match="must be 'openai' or 'anthropic'"):
+    with pytest.raises(ValidationError, match="must be 'openai', 'anthropic', or 'deepseek'"):
         api._default_agent_provider()
 
 

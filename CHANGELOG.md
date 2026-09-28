@@ -70,6 +70,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   and never persist or display generated output or raw provider bodies.
 
 ### Changed
+- Weekly Ops now compiles each tenant-published, versioned graph contract into
+  a LangGraph `StateGraph`. Dynamic marketplace specialists fan out through
+  `Send` with the existing three-worker cap and converge at a failure-aware
+  barrier before cross-platform, manager, and reviewer stages. The durable DB
+  state machine, execution-contract hash, validators, audit chain, platform
+  isolation, approval gate, and whole-run retry semantics remain unchanged.
 - `README.md` is now the English edition (GitHub's default render); Chinese
   moved to `README_ZH.md`, Japanese stays in `README_JA.md`. All three open
   with the CI badge, a screenshot of the running UI and a three-command

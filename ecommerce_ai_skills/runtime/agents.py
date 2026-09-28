@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +32,7 @@ from .errors import (
     RuntimeErrorBase,
     ValidationError,
 )
+from .graph_engine import build_run_graph
 from .storage import Database, Principal
 
 
@@ -1536,6 +1536,176 @@ class WeeklyOpsCouncil:
         result["platforms"] = run.get("platforms") or derived
         return result
 
+    def _execute_specialist_task(
+        self,
+        principal: Principal,
+        run_id: str,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        source_platforms: dict[str, str],
+    ) -> dict[str, Any]:
+        try:
+            result = self._run_specialist(spec, run, safety_identifier)
+            self._validate_refs(
+                result,
+                source_platforms,
+                manager=False,
+                expected_platform=spec.platform,
+            )
+            self.db.complete_agent_task(
+                principal.tenant_id, run_id, spec.name, result
+            )
+            return result
+        except Exception as exc:
+            self.db.fail_agent_task(
+                principal.tenant_id, run_id, spec.name, str(exc)
+            )
+            raise
+
+    def _execute_cross_task(
+        self,
+        principal: Principal,
+        run_id: str,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        source_platforms: dict[str, str],
+        findings: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
+        try:
+            result = self.provider.complete(
+                agent_name=spec.name,
+                instructions=spec.instructions,
+                payload={
+                    "workflow": run["workflow"],
+                    "objective": run["objective"],
+                    "target_platform": "cross_platform",
+                    "platforms": self._marketplace_platforms(run),
+                    "assigned_skills": list(spec.skill_ids),
+                    "skill_contracts": self.skill_loader.load(spec.skill_ids),
+                    "specialist_findings": findings,
+                },
+                output_schema=SPECIALIST_SCHEMA,
+                safety_identifier=safety_identifier,
+            )
+            self._validate_refs(
+                result,
+                source_platforms,
+                manager=False,
+                expected_platform="cross_platform",
+            )
+            self.db.complete_agent_task(
+                principal.tenant_id, run_id, spec.name, result
+            )
+            return result
+        except Exception as exc:
+            self.db.fail_agent_task(
+                principal.tenant_id, run_id, spec.name, str(exc)
+            )
+            raise
+
+    def _execute_manager_task(
+        self,
+        principal: Principal,
+        run_id: str,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        source_platforms: dict[str, str],
+        findings: dict[str, dict[str, Any]],
+        valid_owners: set[str],
+    ) -> dict[str, Any]:
+        self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
+        report = self.provider.complete(
+            agent_name=spec.name,
+            instructions=spec.instructions,
+            payload={
+                "workflow": run["workflow"],
+                "objective": run["objective"],
+                "platforms": self._marketplace_platforms(run),
+                "evidence_catalog": [
+                    {
+                        "source_id": source["source_id"],
+                        "platform": source["platform"],
+                        "source_type": source["source_type"],
+                        "observed_at": source["observed_at"],
+                    }
+                    for source in run["evidence"]
+                ],
+                "specialist_findings": findings,
+            },
+            output_schema=MANAGER_SCHEMA,
+            safety_identifier=safety_identifier,
+        )
+        self._validate_refs(
+            report,
+            source_platforms,
+            manager=True,
+            valid_owners=valid_owners,
+        )
+        self._validate_manager_metric_claims(report, run["evidence"])
+        self.db.complete_agent_task(
+            principal.tenant_id,
+            run_id,
+            spec.name,
+            report,
+            artifact_kind="manager_synthesis",
+        )
+        return report
+
+    def _execute_reviewer_task(
+        self,
+        principal: Principal,
+        run_id: str,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        source_platforms: dict[str, str],
+        findings: dict[str, dict[str, Any]],
+        report: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
+        try:
+            review = self.provider.complete(
+                agent_name=spec.name,
+                instructions=spec.instructions,
+                payload={
+                    "workflow": run["workflow"],
+                    "objective": run["objective"],
+                    "platforms": self._marketplace_platforms(run),
+                    "evidence_catalog": [
+                        {
+                            "source_id": source["source_id"],
+                            "platform": source["platform"],
+                            "source_type": source["source_type"],
+                            "observed_at": source["observed_at"],
+                        }
+                        for source in run["evidence"]
+                    ],
+                    "evidence": run["evidence"],
+                    "specialist_findings": findings,
+                    "manager_report": report,
+                },
+                output_schema=REVIEWER_SCHEMA,
+                safety_identifier=safety_identifier,
+            )
+            self._validate_reviewer(review, source_platforms, report)
+            self.db.complete_agent_task(
+                principal.tenant_id,
+                run_id,
+                spec.name,
+                review,
+                artifact_kind="reviewer_verdict",
+            )
+            return review
+        except Exception as exc:
+            self.db.fail_agent_task(
+                principal.tenant_id, run_id, spec.name, str(exc)
+            )
+            raise
+
     def execute(self, principal: Principal, run_id: str, request_id: str) -> dict[str, Any]:
         self.auth.require(principal, "operator")
         current = self.db.get_agent_run(principal.tenant_id, run_id)
@@ -1584,144 +1754,60 @@ class WeeklyOpsCouncil:
             )
             safety_identifier = self._safety_identifier(principal)
             source_platforms = self._source_platforms(run["evidence"])
-            findings: dict[str, dict[str, Any]] = {}
-            failure: Exception | None = None
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {}
-                for spec in initial_specs:
-                    self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
-                    futures[executor.submit(self._run_specialist, spec, run, safety_identifier)] = spec
-                for future in as_completed(futures):
-                    spec = futures[future]
-                    try:
-                        result = future.result()
-                        self._validate_refs(
-                            result,
-                            source_platforms,
-                            manager=False,
-                            expected_platform=spec.platform,
-                        )
-                        findings[spec.name] = result
-                        self.db.complete_agent_task(
-                            principal.tenant_id, run_id, spec.name, result
-                        )
-                    except Exception as exc:
-                        self.db.fail_agent_task(
-                            principal.tenant_id, run_id, spec.name, str(exc)
-                        )
-                        if failure is None:
-                            failure = exc
-            if failure is not None:
-                raise failure
-
-            if cross_spec is not None:
-                self.db.start_agent_task(principal.tenant_id, run_id, cross_spec.name)
-                try:
-                    cross_result = self.provider.complete(
-                        agent_name=cross_spec.name,
-                        instructions=cross_spec.instructions,
-                        payload={
-                            "workflow": run["workflow"],
-                            "objective": run["objective"],
-                            "target_platform": "cross_platform",
-                            "platforms": self._marketplace_platforms(run),
-                            "assigned_skills": list(cross_spec.skill_ids),
-                            "skill_contracts": self.skill_loader.load(cross_spec.skill_ids),
-                            "specialist_findings": findings,
-                        },
-                        output_schema=SPECIALIST_SCHEMA,
-                        safety_identifier=safety_identifier,
-                    )
-                    self._validate_refs(
-                        cross_result,
-                        source_platforms,
-                        manager=False,
-                        expected_platform="cross_platform",
-                    )
-                    findings[cross_spec.name] = cross_result
-                    self.db.complete_agent_task(
-                        principal.tenant_id, run_id, cross_spec.name, cross_result
-                    )
-                except Exception as exc:
-                    self.db.fail_agent_task(
-                        principal.tenant_id, run_id, cross_spec.name, str(exc)
-                    )
-                    raise
-
-            self.db.start_agent_task(principal.tenant_id, run_id, manager_spec.name)
-            report = self.provider.complete(
-                agent_name=manager_spec.name,
-                instructions=manager_spec.instructions,
-                payload={
-                    "workflow": run["workflow"],
-                    "objective": run["objective"],
-                    "platforms": self._marketplace_platforms(run),
-                    "evidence_catalog": [
-                        {
-                            "source_id": source["source_id"],
-                            "platform": source["platform"],
-                            "source_type": source["source_type"],
-                            "observed_at": source["observed_at"],
-                        }
-                        for source in run["evidence"]
-                    ],
-                    "specialist_findings": findings,
-                },
-                output_schema=MANAGER_SCHEMA,
-                safety_identifier=safety_identifier,
-            )
             valid_owners = {
-                spec.name for spec in [*initial_specs, *([cross_spec] if cross_spec else [])]
+                spec.name
+                for spec in [*initial_specs, *([cross_spec] if cross_spec else [])]
             } | {"human_operator"}
-            self._validate_refs(
-                report, source_platforms, manager=True, valid_owners=valid_owners
-            )
-            self._validate_manager_metric_claims(report, run["evidence"])
-            self.db.complete_agent_task(
-                principal.tenant_id,
-                run_id,
-                manager_spec.name,
-                report,
-                artifact_kind="manager_synthesis",
-            )
-            self.db.start_agent_task(principal.tenant_id, run_id, reviewer_spec.name)
-            try:
-                review = self.provider.complete(
-                    agent_name=reviewer_spec.name,
-                    instructions=reviewer_spec.instructions,
-                    payload={
-                        "workflow": run["workflow"],
-                        "objective": run["objective"],
-                        "platforms": self._marketplace_platforms(run),
-                        "evidence_catalog": [
-                            {
-                                "source_id": source["source_id"],
-                                "platform": source["platform"],
-                                "source_type": source["source_type"],
-                                "observed_at": source["observed_at"],
-                            }
-                            for source in run["evidence"]
-                        ],
-                        "evidence": run["evidence"],
-                        "specialist_findings": findings,
-                        "manager_report": report,
-                    },
-                    output_schema=REVIEWER_SCHEMA,
-                    safety_identifier=safety_identifier,
-                )
-                self._validate_reviewer(review, source_platforms, report)
-                self.db.complete_agent_task(
-                    principal.tenant_id,
+            run_graph = build_run_graph(
+                initial_specs=initial_specs,
+                cross_spec=cross_spec,
+                start_agent_task=lambda spec: self.db.start_agent_task(
+                    principal.tenant_id, run_id, spec.name
+                ),
+                run_specialist=lambda spec: self._execute_specialist_task(
+                    principal,
                     run_id,
-                    reviewer_spec.name,
-                    review,
-                    artifact_kind="reviewer_verdict",
-                )
-            except Exception as exc:
-                self.db.fail_agent_task(
-                    principal.tenant_id, run_id, reviewer_spec.name, str(exc)
-                )
-                raise
+                    spec,
+                    run,
+                    safety_identifier,
+                    source_platforms,
+                ),
+                run_cross=lambda findings: self._execute_cross_task(
+                    principal,
+                    run_id,
+                    cross_spec,
+                    run,
+                    safety_identifier,
+                    source_platforms,
+                    findings,
+                ),
+                run_manager=lambda findings: self._execute_manager_task(
+                    principal,
+                    run_id,
+                    manager_spec,
+                    run,
+                    safety_identifier,
+                    source_platforms,
+                    findings,
+                    valid_owners,
+                ),
+                run_reviewer=lambda findings, report: self._execute_reviewer_task(
+                    principal,
+                    run_id,
+                    reviewer_spec,
+                    run,
+                    safety_identifier,
+                    source_platforms,
+                    findings,
+                    report,
+                ),
+                max_workers=self.max_workers,
+            )
+            graph_state = run_graph.invoke({"findings": {}, "failure": None})
+            if graph_state.get("failure") is not None:
+                raise graph_state["failure"]
+            report = graph_state["report"]
+            review = graph_state["review"]
             bundle = self.db.complete_agent_run(
                 principal.tenant_id,
                 run_id,

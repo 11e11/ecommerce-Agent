@@ -115,6 +115,7 @@ class AgentGraphService:
         paths = [
             Path(__file__).resolve(),
             Path(__file__).resolve().with_name("agents.py"),
+            Path(__file__).resolve().with_name("graph_engine.py"),
             dist_root / "ontology.json",
             *sorted((dist_root / "skills").glob("*/manifest.yaml")),
         ]

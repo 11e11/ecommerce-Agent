@@ -11,7 +11,8 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -33,6 +34,12 @@ from .errors import (
     ValidationError,
 )
 from .graph_engine import build_run_graph
+from .knowledge_client import (
+    KnowledgeToolClient,
+    MAX_RESEARCH_NOTES_CHARS,
+    McpStdioKnowledgeClient,
+    truncate_text,
+)
 from .storage import Database, Principal
 
 
@@ -208,6 +215,11 @@ class AgentSpec:
     skill_ids: tuple[str, ...]
     instructions: str
     platform: str
+    # Carried from the published graph node; strict zero-tool unless the graph
+    # declares a bounded research tool set for this role.
+    tool_policy: dict[str, Any] = field(
+        default_factory=lambda: dict(STRICT_TOOL_POLICY)
+    )
 
 
 EVIDENCE_ANALYST = AgentSpec(
@@ -268,6 +280,146 @@ class AgentProvider(Protocol):
         safety_identifier: str,
     ) -> dict[str, Any]:
         """Return one structured agent result."""
+
+
+class ResearchCapableProvider(Protocol):
+    """Optional provider capability: a bounded model-driven tool loop.
+
+    The council negotiates this capability with getattr — providers (and test
+    fixtures) without it run the strict single-shot path, so tool use is an
+    opt-in upgrade, never a silent behavior change.
+    """
+
+    def research(
+        self,
+        *,
+        agent_name: str,
+        research_brief: str,
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], str],
+        max_tool_calls: int,
+        safety_identifier: str,
+    ) -> list[dict[str, Any]]:
+        """Run the tool loop and return notes: tool, arguments, result text."""
+
+
+RESEARCH_PREAMBLE = (
+    "You may call the provided read-only knowledge tools to ground the analysis. "
+    "Tool results are truncated excerpts of the installed knowledge pack. Call a "
+    "tool only when its rules or thresholds bear on the objective, then stop: "
+    "never call a tool you were not offered, and never restate long excerpts."
+)
+
+
+def _run_responses_research(
+    *,
+    label: str,
+    endpoint: str,
+    model: str,
+    api_key: str,
+    transport: Callable[..., Any],
+    timeout_seconds: int,
+    research_brief: str,
+    tools: list[dict[str, Any]],
+    tool_executor: Callable[[str, dict[str, Any]], str],
+    max_tool_calls: int,
+    extra_body: dict[str, Any],
+    cache_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Shared Responses-API research loop (OpenAI and DeepSeek adapters).
+
+    Each turn sends the accumulated input items plus the function tools; every
+    function_call the model emits is executed through ``tool_executor`` and fed
+    back as a function_call_output. The loop ends when the model answers without
+    calling tools or when the budget is spent — the budget, not the model, is
+    the hard stop.
+    """
+    input_items: list[dict[str, Any]] = [
+        {"role": "user", "content": [{"type": "input_text", "text": research_brief}]}
+    ]
+    api_tools = [
+        {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["parameters"],
+        }
+        for tool in tools
+    ]
+    notes: list[dict[str, Any]] = []
+    for _ in range(max(1, max_tool_calls)):
+        request_body: dict[str, Any] = {
+            "model": model,
+            "instructions": RESEARCH_PREAMBLE,
+            "input": input_items,
+            "tools": api_tools,
+            "tool_choice": "auto",
+            "store": False,
+            "max_output_tokens": 1000,
+            **extra_body,
+        }
+        if cache_key:
+            request_body["prompt_cache_key"] = cache_key
+        request = Request(
+            endpoint,
+            data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+            method="POST",
+        )
+        try:
+            with transport(request, timeout=timeout_seconds) as response:
+                status = getattr(response, "status", 200)
+                body = response.read()
+        except HTTPError as exc:
+            raise ExternalServiceError(f"{label} returned HTTP {exc.code}") from exc
+        except URLError as exc:
+            raise ExternalServiceError(f"{label} request failed: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise ExternalServiceError(f"{label} request timed out") from exc
+        if status < 200 or status >= 300:
+            raise ExternalServiceError(f"{label} returned HTTP {status}")
+        try:
+            result = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ExternalServiceError(f"{label} returned invalid JSON") from exc
+        if result.get("status") != "completed":
+            raise ExternalServiceError(
+                f"{label} research response status was {result.get('status', 'unknown')}"
+            )
+        calls = [
+            item
+            for item in result.get("output") or []
+            if isinstance(item, dict) and item.get("type") == "function_call"
+        ]
+        if not calls:
+            break
+        for call in calls:
+            name = str(call.get("name") or "")
+            raw_arguments = call.get("arguments")
+            try:
+                arguments = (
+                    json.loads(raw_arguments)
+                    if isinstance(raw_arguments, str)
+                    else dict(raw_arguments or {})
+                )
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+            result_text = tool_executor(name, arguments)
+            notes.append({"tool": name, "arguments": arguments, "result": result_text})
+            input_items.append(call)
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call.get("call_id"),
+                    "output": result_text,
+                }
+            )
+    return notes
 
 
 @dataclass(frozen=True)
@@ -663,6 +815,36 @@ class OpenAIResponsesProvider:
             raise ExternalServiceError("OpenAI structured output was not an object")
         return structured
 
+    def research(
+        self,
+        *,
+        agent_name: str,
+        research_brief: str,
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], str],
+        max_tool_calls: int,
+        safety_identifier: str,
+    ) -> list[dict[str, Any]]:
+        _, model = self.configuration()
+        api_key = self._environment()["OPENAI_API_KEY"].strip()
+        return _run_responses_research(
+            label="OpenAI",
+            endpoint=self.endpoint,
+            model=model,
+            api_key=api_key,
+            transport=self.transport,
+            timeout_seconds=self.timeout_seconds,
+            research_brief=research_brief,
+            tools=tools,
+            tool_executor=tool_executor,
+            max_tool_calls=max_tool_calls,
+            safety_identifier=safety_identifier,
+            extra_body={
+                "safety_identifier": safety_identifier,
+                "prompt_cache_key": f"ecommerce-ai-weekly-ops-{agent_name}-research",
+            },
+        )
+
 
 @dataclass
 class DeepSeekResponsesProvider:
@@ -807,6 +989,38 @@ class DeepSeekResponsesProvider:
             )
         return structured
 
+    def research(
+        self,
+        *,
+        agent_name: str,
+        research_brief: str,
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], str],
+        max_tool_calls: int,
+        safety_identifier: str,
+    ) -> list[dict[str, Any]]:
+        _, model = self.configuration()
+        api_key = self._environment()[self.credential_env].strip()
+        return _run_responses_research(
+            label=self.provider_label,
+            endpoint=self.endpoint,
+            model=model,
+            api_key=api_key,
+            transport=self.transport,
+            timeout_seconds=self.timeout_seconds,
+            research_brief=research_brief,
+            tools=tools,
+            tool_executor=tool_executor,
+            max_tool_calls=max_tool_calls,
+            safety_identifier=safety_identifier,
+            # OpenAI-only fields (safety_identifier, prompt_cache_key) never
+            # reach the DeepSeek endpoint; keep the request shape minimal.
+            extra_body={
+                "reasoning": {"effort": "none"},
+                "user": safety_identifier,
+            },
+        )
+
 @dataclass
 class AnthropicMessagesProvider:
     """Dependency-free Messages API provider.
@@ -931,6 +1145,80 @@ class AnthropicMessagesProvider:
             f"(stop_reason={stop_reason or 'unknown'})"
         )
 
+    def research(
+        self,
+        *,
+        agent_name: str,
+        research_brief: str,
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], str],
+        max_tool_calls: int,
+        safety_identifier: str,
+    ) -> list[dict[str, Any]]:
+        _, model = self.configuration()
+        api_key = self._environment()["ANTHROPIC_API_KEY"].strip()
+        messages: list[dict[str, Any]] = [{"role": "user", "content": research_brief}]
+        api_tools = [
+            {
+                "name": tool["name"],
+                "description": tool["description"],
+                "input_schema": tool["parameters"],
+            }
+            for tool in tools
+        ]
+        notes: list[dict[str, Any]] = []
+        for _ in range(max(1, max_tool_calls)):
+            body = {
+                "model": model,
+                "max_tokens": 2000,
+                "system": RESEARCH_PREAMBLE,
+                "messages": messages,
+                "tools": api_tools,
+                "tool_choice": {"type": "auto"},
+                "metadata": {"user_id": safety_identifier},
+            }
+            try:
+                status, raw, _ = self._post(body, api_key, self.timeout_seconds)
+            except HTTPError as exc:
+                raise ExternalServiceError(f"Anthropic returned HTTP {exc.code}") from exc
+            except URLError as exc:
+                raise ExternalServiceError(f"Anthropic request failed: {exc.reason}") from exc
+            except TimeoutError as exc:
+                raise ExternalServiceError("Anthropic request timed out") from exc
+            if status < 200 or status >= 300:
+                raise ExternalServiceError(f"Anthropic returned HTTP {status}")
+            try:
+                result = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ExternalServiceError("Anthropic returned invalid JSON") from exc
+            if result.get("stop_reason") == "max_tokens":
+                raise ExternalServiceError(
+                    "Anthropic research response hit max_tokens before completing"
+                )
+            tool_uses = [
+                block
+                for block in result.get("content") or []
+                if isinstance(block, dict) and block.get("type") == "tool_use"
+            ]
+            if result.get("stop_reason") != "tool_use" or not tool_uses:
+                break
+            messages.append({"role": "assistant", "content": result.get("content")})
+            tool_results = []
+            for block in tool_uses:
+                name = str(block.get("name") or "")
+                arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+                result_text = tool_executor(name, arguments)
+                notes.append({"tool": name, "arguments": arguments, "result": result_text})
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.get("id"),
+                        "content": result_text,
+                    }
+                )
+            messages.append({"role": "user", "content": tool_results})
+        return notes
+
     def smoke_check(self) -> dict[str, Any]:
         """Minimal real request returning safe metadata only, never generated text."""
         _, model = self.configuration()
@@ -985,6 +1273,66 @@ class WeeklyOpsCouncil:
     # to be trusted.
     PROVIDER_NAME = "openai_responses"
     SECRET_MARKERS = ("token", "password", "secret", "api_key", "authorization", "credential")
+    # Mirror of the MCP server's own tool schemas for the whitelisted subset.
+    # The graph whitelist decides WHICH tools exist; this decides HOW they are
+    # called. One source of truth per concern, enforced at both layers.
+    RESEARCH_TOOL_DEFS = [
+        {
+            "name": "opc.search_knowledge",
+            "description": (
+                "Search the installed e-commerce knowledge pack (chapter titles, "
+                "summaries, and bodies) by keyword. Returns chapter hits with excerpts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "entity": {"type": "string", "description": "Filter by entity ID"},
+                },
+            },
+        },
+        {
+            "name": "opc.get_constraints",
+            "description": (
+                "Fetch platform constraint rules filtered by platform and/or entity id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {"type": "string", "description": "Platform ID"},
+                    "entity": {"type": "string", "description": "Entity ID"},
+                },
+            },
+        },
+        {
+            "name": "opc.read_chapter",
+            "description": "Read one full knowledge chapter by its id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chapter_id": {"type": "string", "description": "Chapter id"},
+                },
+                "required": ["chapter_id"],
+            },
+        },
+        {
+            "name": "opc.hybrid_search",
+            "description": (
+                "Hybrid retrieval over the knowledge corpus (BM25 + dense "
+                "vectors fused with RRF). Returns chunk-level passages with "
+                "chapter and heading anchors for grounded evidence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "top_k": {"type": "integer",
+                              "description": "How many chunks to return (default 5)"},
+                },
+                "required": ["query"],
+            },
+        },
+    ]
 
     def __init__(
         self,
@@ -997,6 +1345,7 @@ class WeeklyOpsCouncil:
         platform_registry: PlatformRegistry | None = None,
         evidence_resolver: Callable[[Principal, list[str]], list[dict[str, Any]]] | None = None,
         graph_service: AgentGraphService | None = None,
+        knowledge_client: KnowledgeToolClient | None = None,
     ):
         self.db = db
         self.auth = auth
@@ -1006,6 +1355,7 @@ class WeeklyOpsCouncil:
         self.platform_registry = platform_registry or PlatformRegistry()
         self.evidence_resolver = evidence_resolver
         self.graph_service = graph_service or AgentGraphService(db, auth)
+        self.knowledge_client = knowledge_client
 
 
     def _provider_name(self) -> str:
@@ -1247,7 +1597,13 @@ class WeeklyOpsCouncil:
     def _source_platforms(evidence: list[dict[str, Any]]) -> dict[str, str]:
         return {source["source_id"]: source.get("platform", "cross_platform") for source in evidence}
 
-    def _platform_spec(self, platform: str) -> AgentSpec:
+    @staticmethod
+    def _spec_tool_policy(node: dict[str, Any] | None) -> dict[str, Any]:
+        return dict(node["tool_policy"]) if node else dict(STRICT_TOOL_POLICY)
+
+    def _platform_spec(
+        self, platform: str, tool_policy: dict[str, Any] | None = None
+    ) -> AgentSpec:
         label = self.platform_registry.label(platform)
         skills = self.skill_loader.skill_ids_for_platform(platform)
         if platform == "amazon":
@@ -1265,7 +1621,13 @@ class WeeklyOpsCouncil:
                 "evidence, keep its metrics and rules separate from other marketplaces, and "
                 "report unsupported capabilities as data gaps."
             )
-        return AgentSpec(f"platform_{platform}_operator", skills, instructions, platform)
+        return AgentSpec(
+            f"platform_{platform}_operator",
+            skills,
+            instructions,
+            platform,
+            tool_policy if tool_policy is not None else dict(STRICT_TOOL_POLICY),
+        )
 
     def _marketplace_platforms(self, run: dict[str, Any]) -> list[str]:
         platforms = [
@@ -1280,7 +1642,11 @@ class WeeklyOpsCouncil:
     def _task_specs(
         self, run: dict[str, Any], definition: dict[str, Any]
     ) -> tuple[list[AgentSpec], AgentSpec | None, AgentSpec, AgentSpec]:
-        marketplace_specs = [self._platform_spec(platform) for platform in self._marketplace_platforms(run)]
+        specialist_node = self._node_for_role(definition, "platform_specialist")
+        marketplace_specs = [
+            self._platform_spec(platform, self._spec_tool_policy(specialist_node))
+            for platform in self._marketplace_platforms(run)
+        ]
         evidence_node = self._node_for_role(definition, "evidence_analyst")
         cross_node = self._node_for_role(definition, "cross_controller")
         evidence_spec = AgentSpec(
@@ -1288,6 +1654,7 @@ class WeeklyOpsCouncil:
             tuple(evidence_node["skill_ids"] if evidence_node else EVIDENCE_ANALYST.skill_ids),
             EVIDENCE_ANALYST.instructions,
             EVIDENCE_ANALYST.platform,
+            self._spec_tool_policy(evidence_node),
         )
         initial = [evidence_spec, *marketplace_specs]
         cross = None
@@ -1297,6 +1664,7 @@ class WeeklyOpsCouncil:
                 tuple(cross_node["skill_ids"]),
                 CROSS_PLATFORM_CONTROLLER.instructions,
                 CROSS_PLATFORM_CONTROLLER.platform,
+                self._spec_tool_policy(cross_node),
             )
         manager_skills = tuple(
             sorted({skill for spec in [*initial, *([cross] if cross else [])] for skill in spec.skill_ids})
@@ -1326,7 +1694,7 @@ class WeeklyOpsCouncil:
             "agent_name": spec.name,
             "graph_node_key": node["key"],
             "role": role,
-            "tool_policy": dict(STRICT_TOOL_POLICY),
+            "tool_policy": dict(spec.tool_policy),
             "skill_ids": list(spec.skill_ids),
         }
 
@@ -1632,6 +2000,7 @@ class WeeklyOpsCouncil:
         spec: AgentSpec,
         run: dict[str, Any],
         safety_identifier: str,
+        knowledge_client: KnowledgeToolClient | None = None,
     ) -> dict[str, Any]:
         evidence = (
             run["evidence"]
@@ -1641,20 +2010,109 @@ class WeeklyOpsCouncil:
                 if source.get("platform") in {spec.platform, "cross_platform"}
             ]
         )
+        payload: dict[str, Any] = {
+            "workflow": run["workflow"],
+            "objective": run["objective"],
+            "target_platform": spec.platform,
+            "assigned_skills": list(spec.skill_ids),
+            "skill_contracts": self.skill_loader.load(spec.skill_ids),
+            "evidence": evidence,
+        }
+        research_notes = self._research_notes(spec, run, safety_identifier, knowledge_client)
+        if research_notes:
+            payload["research_notes"] = research_notes
         return self.provider.complete(
             agent_name=spec.name,
             instructions=spec.instructions,
-            payload={
-                "workflow": run["workflow"],
-                "objective": run["objective"],
-                "target_platform": spec.platform,
-                "assigned_skills": list(spec.skill_ids),
-                "skill_contracts": self.skill_loader.load(spec.skill_ids),
-                "evidence": evidence,
-            },
+            payload=payload,
             output_schema=SPECIALIST_SCHEMA,
             safety_identifier=safety_identifier,
         )
+
+    def _research_notes(
+        self,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        knowledge_client: KnowledgeToolClient | None,
+    ) -> list[dict[str, Any]]:
+        """Run the bounded research phase for a tool-enabled spec.
+
+        Capability-negotiated twice: the provider must implement research() and
+        a knowledge client must be available — either missing and the spec runs
+        the strict single-shot path. The executor enforces the graph whitelist
+        again at call time (defense in depth against a rogue model request),
+        audits every invocation, and truncates results before they reach a
+        prompt.
+        """
+        research = getattr(self.provider, "research", None)
+        if research is None or knowledge_client is None:
+            return []
+        allowed = set(spec.tool_policy.get("allowed_tools") or [])
+        max_tool_calls = int(spec.tool_policy.get("max_tool_calls") or 0)
+        if not allowed or max_tool_calls < 1:
+            return []
+        tenant_id = run.get("tenant_id")
+        run_id = run.get("id")
+        evidence_summary = ", ".join(
+            f"{source['source_id']}({source['source_type']},{source['platform']})"
+            for source in run["evidence"][:10]
+        )
+        research_brief = (
+            "Research the installed knowledge pack for rules that ground this analysis. "
+            f"Objective: {run['objective']}. Evidence on hand: {evidence_summary}. "
+            f"Assigned skills: {', '.join(spec.skill_ids) or 'none'}. "
+            "Note only rule names, thresholds, and chapter ids relevant to the objective."
+        )
+
+        def tool_executor(name: str, arguments: dict[str, Any]) -> str:
+            started = time.monotonic()
+            digest = hashlib.sha256(
+                json.dumps(arguments, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:16]
+            base = {"agent_name": spec.name, "tool": name, "arguments_digest": digest}
+            if name not in allowed:
+                self.db.record_tool_invocation(
+                    tenant_id, run_id, spec.name,
+                    summary={**base, "refused": True},
+                )
+                return "ERROR: tool is not allowed for this agent"
+            error = None
+            try:
+                text = knowledge_client.call(name, arguments)
+            except Exception as exc:
+                text, error = "", str(exc)[:200]
+            bounded, was_truncated = truncate_text(text)
+            self.db.record_tool_invocation(
+                tenant_id, run_id, spec.name,
+                summary={
+                    **base,
+                    "truncated": was_truncated,
+                    "error": error,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                },
+            )
+            return f"ERROR: {error}" if error is not None else bounded
+
+        notes = research(
+            agent_name=spec.name,
+            research_brief=research_brief,
+            tools=[
+                tool for tool in self.RESEARCH_TOOL_DEFS if tool["name"] in allowed
+            ],
+            tool_executor=tool_executor,
+            max_tool_calls=max_tool_calls,
+            safety_identifier=safety_identifier,
+        )
+        bounded_notes: list[dict[str, Any]] = []
+        total_chars = 0
+        for note in notes:
+            size = len(json.dumps(note, ensure_ascii=False))
+            if total_chars + size > MAX_RESEARCH_NOTES_CHARS:
+                break
+            total_chars += size
+            bounded_notes.append(note)
+        return bounded_notes
 
     def _normalize_run_platforms(self, run: dict[str, Any]) -> dict[str, Any]:
         """Keep v3 runs executable after the evidence contract gained platform."""
@@ -1687,9 +2145,10 @@ class WeeklyOpsCouncil:
         run: dict[str, Any],
         safety_identifier: str,
         source_platforms: dict[str, str],
+        knowledge_client: KnowledgeToolClient | None = None,
     ) -> dict[str, Any]:
         try:
-            result = self._run_specialist(spec, run, safety_identifier)
+            result = self._run_specialist(spec, run, safety_identifier, knowledge_client)
             self._validate_refs(
                 result,
                 source_platforms,
@@ -1867,6 +2326,11 @@ class WeeklyOpsCouncil:
             principal.tenant_id, run_id, provider=provider_name, model=model
         )
         run = self._normalize_run_platforms(run)
+        # Bound before the try so an early failure (contract drift, task-spec
+        # validation) cannot hit the finally with an unbound local and mask
+        # the real error with an UnboundLocalError.
+        knowledge_client: Any | None = None
+        knowledge_client_owned = False
         try:
             graph_version = self.graph_service.get_version(
                 principal, run.get("graph_version_id")
@@ -1901,6 +2365,17 @@ class WeeklyOpsCouncil:
                 spec.name
                 for spec in [*initial_specs, *([cross_spec] if cross_spec else [])]
             } | {"human_operator"}
+            # Tool phase is opt-in at three gates: a node whose published policy
+            # allows research tools, a provider that implements research(), and
+            # a knowledge client. Any gate closed runs the strict single-shot
+            # path — capability negotiation, not a hard requirement.
+            knowledge_client: KnowledgeToolClient | None = None
+            knowledge_client_owned = False
+            if any(
+                spec.tool_policy != STRICT_TOOL_POLICY for spec in task_specs
+            ) and hasattr(self.provider, "research"):
+                knowledge_client = self.knowledge_client or McpStdioKnowledgeClient()
+                knowledge_client_owned = self.knowledge_client is None
             run_graph = build_run_graph(
                 initial_specs=initial_specs,
                 cross_spec=cross_spec,
@@ -1914,6 +2389,7 @@ class WeeklyOpsCouncil:
                     run,
                     safety_identifier,
                     source_platforms,
+                    knowledge_client,
                 ),
                 run_cross=lambda findings: self._execute_cross_task(
                     principal,
@@ -1996,3 +2472,8 @@ class WeeklyOpsCouncil:
             if isinstance(exc, RuntimeErrorBase):
                 raise
             raise ExternalServiceError("agent workflow execution failed") from exc
+        finally:
+            if knowledge_client_owned and knowledge_client is not None:
+                closer = getattr(knowledge_client, "close", None)
+                if callable(closer):
+                    closer()

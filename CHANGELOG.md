@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Bounded MCP tool phase for graph agents: the evidence analyst's published
+  graph policy may declare a subset of the read-only knowledge whitelist
+  (`opc.search_knowledge`, `opc.get_constraints`, `opc.read_chapter`, max 8
+  calls per task). Providers negotiate the new optional `research()` capability
+  — a two-phase design (model-driven tool loop, then the existing strict-schema
+  `complete()` with `research_notes` injected) so every downstream validator
+  stays untouched. Providers without the capability degrade to the strict
+  single-shot path. Every invocation is audited as a `task.tool_call` event
+  with argument digest, truncation flag, and duration; the executor re-checks
+  the whitelist and truncates results before they reach a prompt.
+- `runtime/knowledge_client.py`: stdio MCP client that spawns the bundled
+  integrity-checked MCP server, so internal agents and external MCP clients
+  see byte-identical tools. `mcp>=1.28,<2` moves from optional extra to core
+  dependency (the default graph now carries a research policy).
+- Graph contract: per-node `tool_policy` accepts either the strict zero-tool
+  policy or a bounded whitelist subset; manager and reviewer must stay
+  tool-free (review sees only frozen artifacts). Default graph enables the
+  research set for the evidence analyst.
 - `DeepSeekResponsesProvider`: set `EAI_AGENT_PROVIDER=deepseek` with
   `DEEPSEEK_API_KEY` and `EAI_DEEPSEEK_MODEL` to run the existing agent
   workflow through DeepSeek's official Responses endpoint without persisting

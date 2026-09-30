@@ -5412,6 +5412,42 @@ class Database:
                 ),
             )
 
+    def record_tool_invocation(
+        self, tenant_id: str, run_id: str, agent_name: str, *, summary: dict[str, Any]
+    ) -> None:
+        """Append a bounded tool-invocation event while a task is running.
+
+        Args and results enter the event as digests plus the caller's short
+        excerpt, never the full payload: the event log proves what the agent
+        touched without becoming a second evidence store. The event streams to
+        the UI through the existing events cursor endpoint.
+        """
+        now = utc_now()
+        with self.transaction() as conn:
+            task = conn.execute(
+                """SELECT id, attempt_count FROM agent_tasks
+                   WHERE tenant_id=? AND run_id=? AND agent_name=?""",
+                (tenant_id, run_id, agent_name),
+            ).fetchone()
+            conn.execute(
+                """INSERT INTO agent_events(
+                   id,tenant_id,run_id,task_id,event_type,payload_json,created_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    self._id(), tenant_id, run_id,
+                    task["id"] if task else None, "task.tool_call",
+                    json.dumps(
+                        {
+                            "agent_name": agent_name,
+                            "attempt": int(task["attempt_count"]) if task else 0,
+                            **summary,
+                        },
+                        ensure_ascii=False, sort_keys=True,
+                    ),
+                    now,
+                ),
+            )
+
     def complete_agent_run(
         self,
         tenant_id: str,

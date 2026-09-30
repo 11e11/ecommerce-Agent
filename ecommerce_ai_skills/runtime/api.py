@@ -22,6 +22,19 @@ from urllib.parse import parse_qs, urlparse
 
 from ecommerce_ai_skills import __version__
 
+# mimetypes reads the Windows registry, where installed apps can remap
+# extensions (e.g. .svg -> image/svg); pin the types the UI relies on.
+STATIC_MIME_OVERRIDES = {
+    ".css": "text/css",
+    ".html": "text/html",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain",
+    ".woff2": "font/woff2",
+}
+
 from .actions import ActionService
 from .agent_graphs import AgentGraphService
 from .accounts import MarketplaceAccountService
@@ -260,7 +273,9 @@ class _Handler(BaseHTTPRequestHandler):
             parts = Path(relative).parts
             if not parts or any(part in {"", ".", ".."} for part in parts):
                 raise NotFoundError("route not found")
-            guessed = mimetypes.guess_type(relative)[0] or "application/octet-stream"
+            guessed = STATIC_MIME_OVERRIDES.get(
+                Path(relative).suffix.lower()
+            ) or mimetypes.guess_type(relative)[0] or "application/octet-stream"
             asset = (relative, guessed)
         if asset is None:
             raise NotFoundError("route not found")

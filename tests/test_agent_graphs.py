@@ -150,9 +150,21 @@ def test_schema_v16_graph_persistence_rbac_tenant_and_immutable_publish(tmp_path
     assert {node["role"] for node in default_version["definition"]["nodes"]} == {
         "evidence_analyst", "platform_specialist", "cross_controller", "manager", "reviewer"
     }
-    assert all(
-        node["tool_policy"] == {"allowed_tools": [], "max_tool_calls": 0}
+    node_policies = {
+        node["role"]: node["tool_policy"]
         for node in default_version["definition"]["nodes"]
+    }
+    assert node_policies["evidence_analyst"] == {
+        "allowed_tools": [
+            "opc.get_constraints", "opc.read_chapter", "opc.search_knowledge",
+        ],
+        "max_tool_calls": 6,
+    }
+    assert all(
+        node_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
+        for role in (
+            "platform_specialist", "cross_controller", "manager", "reviewer",
+        )
     )
     with pytest.raises(AuthorizationError):
         app.agent_graphs.create(viewer, "Viewer graph", default_graph_definition(), "viewer-create")
@@ -425,8 +437,15 @@ def test_graph_contract_rejects_noncanonical_dag_prompts_unknown_skills_and_tool
 
     tools = copy.deepcopy(definition)
     tools["nodes"][0]["tool_policy"] = {"allowed_tools": ["browser"], "max_tool_calls": 1}
-    with pytest.raises(ValidationError, match="disable all tool calls"):
+    with pytest.raises(ValidationError, match="read-only knowledge whitelist"):
         app.agent_graphs.create(owner, "Tools enabled", tools, "bad-tools")
+
+    manager_tools = copy.deepcopy(definition)
+    manager_tools["nodes"][3]["tool_policy"] = {
+        "allowed_tools": ["opc.search_knowledge"], "max_tool_calls": 2,
+    }
+    with pytest.raises(ValidationError, match="must not carry tools"):
+        app.agent_graphs.create(owner, "Manager tools", manager_tools, "bad-manager-tools")
 
 
 def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path) -> None:
@@ -491,9 +510,18 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
     assert {task["role"] for task in bundle["tasks"]} == {
         "evidence_analyst", "platform_specialist", "cross_controller", "manager", "reviewer"
     }
+    task_policies = {
+        task["role"]: task["tool_policy"] for task in bundle["tasks"]
+    }
+    assert task_policies["evidence_analyst"]["max_tool_calls"] == 6
+    assert set(task_policies["evidence_analyst"]["allowed_tools"]) == {
+        "opc.search_knowledge", "opc.get_constraints", "opc.read_chapter",
+    }
     assert all(
-        task["tool_policy"] == {"allowed_tools": [], "max_tool_calls": 0}
-        for task in bundle["tasks"]
+        task_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
+        for role in (
+            "platform_specialist", "cross_controller", "manager", "reviewer",
+        )
     )
     call_names = [name for name, _ in provider.calls]
     assert call_names[-1] == "operations_reviewer"

@@ -130,7 +130,9 @@ class EvidenceObjectStore:
         else:
             handle, temporary_name = tempfile.mkstemp(prefix=".evidence-", dir=target.parent)
             try:
-                os.fchmod(handle, 0o600)
+                # fchmod is POSIX-only; Windows enforces permissions via ACLs, so skip.
+                if hasattr(os, "fchmod"):
+                    os.fchmod(handle, 0o600)
                 with os.fdopen(handle, "wb") as stream:
                     stream.write(raw)
                     stream.flush()

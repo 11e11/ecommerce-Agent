@@ -776,18 +776,21 @@ class HybridRetriever:
             warnings.append("query_rewrite_unavailable_no_llm")
 
         # Stage architecture: recall (BM25+vector per query, RRF-fused) ->
-        # rerank (precision) -> results. Rewrite semantics = REPLACEMENT: the
-        # rewritten query runs as a clean single pipeline. Measured on the
-        # bad-case subset (8 items, MRR@10): rerank-only 0.375, rewrite-
-        # replacement 0.675, multi-query fusion variants 0.31-0.47 — fusing
-        # the rewritten query's candidates with the original's let rerank
-        # noise and cross-leg interference erode BOTH kinds of wins (see
-        # RAG_IMPROVEMENT_LOG.md for the full iteration matrix).
-        effective_query = (rewritten_query or query).strip() or query
+        # rerank (precision) -> results. Rewrite semantics = CONCATENATION:
+        # the rewrite's content keywords are appended to the original query.
+        # History (see RAG_IMPROVEMENT_LOG.md for the full matrix): replacement
+        # lost the original query's lexical anchors and let generic rewrite
+        # words feed near-duplicate passages (prod-002 1.00->0.33); multi-query
+        # fusion variants all let rerank noise and cross-leg interference erode
+        # both kinds of wins (0.31-0.47 vs replacement's 0.675). Concatenation
+        # keeps the original anchors while adding the rewrite's — the meta
+        # questions get content keywords without the precise questions losing
+        # theirs.
+        effective_query = query
+        if rewritten_query and rewritten_query.strip().lower() != query.strip().lower():
+            effective_query = f"{query} {rewritten_query.strip()}".strip()
         rerank_backend = self.rerank_backend()
-        leg_specs: list[tuple[str, float]] = [
-            (rewritten_query.strip() if rewritten_query else query, 1.0)
-        ]
+        leg_specs: list[tuple[str, float]] = [(effective_query, 1.0)]
         leg_rankings: list[list[str]] = []
         leg_weights: list[float] = []
         for leg_query, leg_weight in leg_specs:
@@ -797,8 +800,16 @@ class HybridRetriever:
             warnings.extend(leg_warnings)
             leg_fused = rrf_fuse(rankings, top_n=max(candidate_k, top_k))
             if rerank and rerank_backend is not None:
+                # The reranker always scores against the user's ORIGINAL
+                # question, even when recall ran on a rewritten/concatenated
+                # query: the rewrite's job is to widen the candidate pool,
+                # not to redefine relevance. Measured: reranking the
+                # concatenated query perturbed six otherwise-perfect cases
+                # (1.00 -> 0.33-0.50) because the appended keywords steer
+                # the cross-encoder; scoring against the original question
+                # keeps the enriched pool but the original intent.
                 reranked = self._rerank_candidates(
-                    leg_query, leg_fused, warnings, rerank_backend
+                    query, leg_fused, warnings, rerank_backend
                 )
                 if reranked is not None:
                     leg_fused = reranked

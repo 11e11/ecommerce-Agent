@@ -32,6 +32,7 @@ Tools (callable capabilities):
     opc.route_query        — Route a user query to the appropriate skill
     opc.get_constraints    — Get constraints for a specific platform/entity
     opc.search_knowledge   — Search knowledge index by entity or keyword
+    opc.hybrid_search      — BM25 + vector hybrid retrieval (RRF), chunk-level
     opc.read_chapter       — Read a full knowledge chapter by id
     opc.list_skills        — List all available skills with their manifests
 
@@ -144,6 +145,24 @@ class OPCServer:
         self._routing_rules = self._build_routing_rules()
         self._validate_loaded_counts()
         self.runtime = runtime or RuntimeBridge()
+        self._retriever = self._load_retriever()
+
+    def _load_retriever(self):
+        """Attach the hybrid retriever when the runtime package is importable.
+
+        Standalone runs (``python3 integration/mcp-server.py``) without the
+        package installed keep working — the tool simply does not appear.
+        Listing it never requires network access either: the retriever itself
+        degrades to keyword-only when no embedding endpoint is configured.
+        """
+        try:
+            from ecommerce_ai_skills.runtime.retrieval import HybridRetriever
+        except ImportError:
+            return None
+        try:
+            return HybridRetriever(dist_path=self.dist)
+        except Exception:
+            return None
 
     def _validate_package_files(self) -> dict:
         manifest_path = self.dist / "package-manifest.json"
@@ -371,7 +390,29 @@ class OPCServer:
                 "description": "List all available domain skills with their manifests",
                 "inputSchema": {"type": "object", "properties": {}}
             },
-        ] + self._ops_tools()
+        ] + ([
+            {
+                "name": "opc.hybrid_search",
+                "description": (
+                    "Hybrid retrieval over the knowledge corpus: BM25 + dense "
+                    "vectors fused with reciprocal rank fusion, returning chunk-"
+                    "level passages with chapter and heading anchors. Use this "
+                    "instead of search_knowledge when you need grounded evidence "
+                    "passages rather than a chapter list. Falls back to keyword-"
+                    "only ranking when no embedding endpoint is configured "
+                    "(EAI_EMBEDDING_API_KEY)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "top_k": {"type": "integer",
+                                  "description": "How many chunks to return (default 5)"}
+                    },
+                    "required": ["query"]
+                }
+            },
+        ] if self._retriever is not None else []) + self._ops_tools()
 
     # Ops tools are read-only and appear only when a runtime is wired up. See
     # RuntimeBridge for why approve/execute are deliberately absent.
@@ -414,6 +455,46 @@ class OPCServer:
             return error
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
+    def _hybrid_search(self, query: str, top_k: Any = None) -> str:
+        """Chunk-level hybrid retrieval; errors are text for the calling agent."""
+        if self._retriever is None:
+            return ("opc.hybrid_search is unavailable: the runtime package "
+                    "is not importable from this process.")
+        if not str(query).strip():
+            return "Query is empty."
+        try:
+            limit = int(top_k) if top_k is not None else 5
+        except (TypeError, ValueError):
+            limit = 5
+        try:
+            result = self._retriever.search(
+                str(query), top_k=max(1, min(limit, 20))
+            )
+        except Exception as exc:
+            return f"hybrid_search failed: {type(exc).__name__}: {exc}"
+        if result["mode"] == "bm25":
+            mode_note = (
+                "keyword-only (vector leg degraded: "
+                f"{result['vector_degraded_reason'] or 'not configured'})"
+            )
+        else:
+            mode_note = "bm25+vector (RRF)"
+        return json.dumps({
+            "query": result["query"],
+            "retrieval_mode": result["retrieval_mode"],
+            "mode": mode_note,
+            "results": [
+                {
+                    "chunk_id": item["chunk_id"],
+                    "chapter_id": item["chapter_id"],
+                    "heading": item["heading"],
+                    "excerpt": item["excerpt"],
+                    "score": item["score"],
+                }
+                for item in result["results"]
+            ],
+        }, ensure_ascii=False, indent=2)
+
     def call_tool(self, name: str, args: dict) -> str:
         if name == "opc.route_query":
             return self._route_query(args.get("query", ""))
@@ -425,6 +506,8 @@ class OPCServer:
             return self._read_chapter(args.get("chapter_id", ""))
         elif name == "opc.list_skills":
             return self._list_skills()
+        elif name == "opc.hybrid_search":
+            return self._hybrid_search(args.get("query", ""), args.get("top_k"))
         elif any(name == n for n, _p, _d in self.OPS_TOOLS):
             return self._call_ops_tool(name)
         return f"Unknown tool: {name}"

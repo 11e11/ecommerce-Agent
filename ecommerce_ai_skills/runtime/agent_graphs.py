@@ -23,6 +23,19 @@ KNOWN_ROLES = {
 }
 KNOWN_EXPANSIONS = {"singleton", "each_input_marketplace", "multiple_marketplaces"}
 STRICT_TOOL_POLICY = {"allowed_tools": [], "max_tool_calls": 0}
+# Read-only knowledge tools only. Write-class and ops tools must never appear
+# here: the graph contract is the second guard behind the executor's own
+# whitelist check, and neither of them can reach the approval-gated write path.
+# opc.hybrid_search is read-only retrieval too (BM25 + vector fusion over the
+# packaged corpus); it degrades to keyword-only without embedding credentials.
+RESEARCH_TOOL_WHITELIST = {
+    "opc.search_knowledge",
+    "opc.get_constraints",
+    "opc.read_chapter",
+    "opc.hybrid_search",
+}
+TOOL_FREE_ROLES = {"manager", "reviewer"}
+MAX_TOOL_CALLS_PER_TASK = 8
 KNOWN_INSTRUCTION_KEYS = {
     "evidence_analyst": "weekly_ops.evidence_analyst.v1",
     "platform_specialist": "weekly_ops.platform_specialist.v1",
@@ -30,6 +43,48 @@ KNOWN_INSTRUCTION_KEYS = {
     "manager": "weekly_ops.manager.v1",
     "reviewer": "weekly_ops.reviewer.v1",
 }
+
+
+def _validate_tool_policy(role: str, policy: Any) -> dict[str, Any]:
+    """Strict zero-tool stays legal for every role; research roles may declare
+    a bounded subset of the read-only knowledge whitelist. Manager and reviewer
+    stay tool-free by contract: their review sees only frozen artifacts."""
+    if policy == STRICT_TOOL_POLICY:
+        return dict(STRICT_TOOL_POLICY)
+    if role in TOOL_FREE_ROLES:
+        raise ValidationError(
+            f"role {role} must not carry tools; review sees only frozen artifacts"
+        )
+    if not isinstance(policy, dict) or set(policy) != {"allowed_tools", "max_tool_calls"}:
+        raise ValidationError(
+            "graph tool_policy must be strict zero-tool or "
+            "allowed_tools + max_tool_calls"
+        )
+    tools = policy["allowed_tools"]
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or len(tools) > len(RESEARCH_TOOL_WHITELIST)
+        or any(
+            not isinstance(item, str) or item not in RESEARCH_TOOL_WHITELIST
+            for item in tools
+        )
+    ):
+        raise ValidationError(
+            "graph tool_policy allowed_tools must be a non-empty subset of the "
+            "read-only knowledge whitelist: " + ", ".join(sorted(RESEARCH_TOOL_WHITELIST))
+        )
+    max_calls = policy["max_tool_calls"]
+    if (
+        isinstance(max_calls, bool)
+        or not isinstance(max_calls, int)
+        or not 1 <= max_calls <= MAX_TOOL_CALLS_PER_TASK
+    ):
+        raise ValidationError(
+            f"graph tool_policy max_tool_calls must be an integer "
+            f"between 1 and {MAX_TOOL_CALLS_PER_TASK}"
+        )
+    return {"allowed_tools": sorted(tools), "max_tool_calls": max_calls}
 
 
 def default_graph_definition() -> dict[str, Any]:
@@ -44,7 +99,14 @@ def default_graph_definition() -> dict[str, Any]:
                 "optional": False,
                 "skill_ids": ["ecom-applicability"],
                 "instruction_key": KNOWN_INSTRUCTION_KEYS["evidence_analyst"],
-                "tool_policy": dict(STRICT_TOOL_POLICY),
+                "tool_policy": {
+                    "allowed_tools": [
+                        "opc.get_constraints",
+                        "opc.read_chapter",
+                        "opc.search_knowledge",
+                    ],
+                    "max_tool_calls": 6,
+                },
             },
             {
                 "key": "platform_specialist",
@@ -203,13 +265,12 @@ class AgentGraphService:
                 )
             if node["instruction_key"] != KNOWN_INSTRUCTION_KEYS[role]:
                 raise ValidationError(f"role {role} must use its known instruction_key")
-            if node["tool_policy"] != STRICT_TOOL_POLICY:
-                raise ValidationError("L7 graph tool_policy must disable all tool calls")
+            validated_policy = _validate_tool_policy(role, node["tool_policy"])
             normalized_nodes.append(
                 {
                     **node,
                     "skill_ids": sorted(skill_ids),
-                    "tool_policy": dict(STRICT_TOOL_POLICY),
+                    "tool_policy": validated_policy,
                 }
             )
         required_roles = set(KNOWN_ROLES)

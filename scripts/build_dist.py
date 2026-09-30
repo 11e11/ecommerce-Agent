@@ -63,7 +63,10 @@ def _sync_installable_package(dist: pathlib.Path) -> None:
     if package_root.exists():
         shutil.rmtree(package_root)
     package_root.mkdir(parents=True)
-    shutil.copytree(dist, package_root / "dist")
+    # COPY_IGNORE: a local pytest run byte-compiles integration/mcp-server.py
+    # in place (conftest loads it by file path); without the ignore that
+    # __pycache__ rides into the installable wheel and trips --check.
+    shutil.copytree(dist, package_root / "dist", ignore=COPY_IGNORE)
 
 
 def build_dist(dist: pathlib.Path = DIST, *, announce: bool = True, sync_package: bool = True) -> int:
@@ -80,7 +83,7 @@ def build_dist(dist: pathlib.Path = DIST, *, announce: bool = True, sync_package
         if path.exists():
             ontology[yf.replace(".yaml", "")] = yaml.safe_load(path.read_text(encoding="utf-8"))
     (dist / "ontology.json").write_text(
-        json.dumps(ontology, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(ontology, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n"
     )
 
     # 2. prompts.json — all prompts, trilingual
@@ -101,12 +104,12 @@ def build_dist(dist: pathlib.Path = DIST, *, announce: bool = True, sync_package
                 found_tags = sum(1 for t in tags if t in body)
                 if found_tags >= 2:
                     prompts.append({
-                        "source": f"{tree}/{md.relative_to(ROOT / tree)}",
+                        "source": f"{tree}/{md.relative_to(ROOT / tree).as_posix()}",
                         "body": body,
                         "language": {"src": "zh", "i18n/en/src": "en", "i18n/ja/src": "ja"}[tree],
                     })
     (dist / "prompts.json").write_text(
-        json.dumps(prompts, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(prompts, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n"
     )
 
     # 3. integration/ — copy adapter docs
@@ -135,7 +138,10 @@ def build_dist(dist: pathlib.Path = DIST, *, announce: bool = True, sync_package
     for md_path in sorted(SRC.rglob("*.md")):
         if md_path.name in ("SUMMARY.md", "README.md"):
             continue
-        rel = str(md_path.relative_to(SRC))
+        # as_posix(): chapter ids must flatten on forward slashes on every
+        # OS — on Windows str() yields backslashes and the dist layout would
+        # diverge from the POSIX-built committed artifacts.
+        rel = md_path.relative_to(SRC).as_posix()
         text = md_path.read_text(encoding="utf-8")
 
         # Extract title from first H1
@@ -172,7 +178,7 @@ def build_dist(dist: pathlib.Path = DIST, *, announce: bool = True, sync_package
         # id is a single token an agent can pass back through a tool call.
         chapter_id = rel[:-3].replace("/", "__") if rel.endswith(".md") else rel.replace("/", "__")
         body_rel = f"chapters/{chapter_id}.md"
-        (chapters_dir / f"{chapter_id}.md").write_text(text, encoding="utf-8")
+        (chapters_dir / f"{chapter_id}.md").write_text(text, encoding="utf-8", newline="\n")
 
         knowledge_index.append({
             "id": chapter_id,
@@ -237,7 +243,7 @@ Each entry:
 from the index is usually still present in the body. Grep `chapters/` before
 concluding anything is missing.
 """.format(len(knowledge_index))
-    (dist / "knowledge" / "query_guide.md").write_text(query_guide)
+    (dist / "knowledge" / "query_guide.md").write_text(query_guide, newline="\n")
 
     # 5. references/
     for ref_name in ["glossary.md", "boundaries.md"]:
@@ -362,7 +368,7 @@ Only after all three come up empty should you say the package lacks that content
 
 See `integration/` for framework-specific setup guides.
 """
-    (dist / "SKILL.md").write_text(root_skill)
+    (dist / "SKILL.md").write_text(root_skill, newline="\n")
 
     # 6. README.md — human quickstart
     readme = f"""# OPC E-Commerce AI Infrastructure
@@ -444,7 +450,7 @@ See `integration/mcp.md` for MCP server setup.
 See each skill's manifest (skills/<skill>/manifest.yaml) for input/output schemas.
 See `knowledge/query_guide.md` for retrieval patterns.
 """
-    (dist / "README.md").write_text(readme)
+    (dist / "README.md").write_text(readme, newline="\n")
 
     # 7. INTEGRATION.md — framework guide index
     integration_md = """# Integration Guides
@@ -470,7 +476,7 @@ This package is framework-agnostic. Choose your integration path:
 2. Add a system-prompt file with the adapted system prompt
 3. Document any framework-specific routing or tool call format differences
 """
-    (dist / "INTEGRATION.md").write_text(integration_md)
+    (dist / "INTEGRATION.md").write_text(integration_md, newline="\n")
 
     # 7b. Runtime contract and operational controls.  These are shipped with
     # the installable artifact so an operator can audit the API/security
@@ -508,7 +514,7 @@ This package is framework-agnostic. Choose your integration path:
     (dist / ".claude-plugin").mkdir(exist_ok=True)
     (dist / ".claude-plugin" / "plugin.json").write_text(
         json.dumps(plugin_manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="\n",
     )
 
     # 8. package-manifest.json — runtime completeness and integrity contract.
@@ -536,7 +542,7 @@ This package is framework-agnostic. Choose your integration path:
     }
     (dist / "package-manifest.json").write_text(
         json.dumps(package_manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="\n",
     )
 
     if sync_package and dist.resolve() == DIST.resolve():

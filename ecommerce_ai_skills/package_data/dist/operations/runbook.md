@@ -247,8 +247,8 @@ report sync, so operate the report worker/sync cadence separately.
 
 ## Multi-agent runs
 
-- Set `OPENAI_API_KEY` only in the deployment secret manager and set
-  `EAI_OPENAI_MODEL` explicitly. Neither value is persisted in SQLite.
+- Set `EAI_AGENT_PROVIDER` and the selected provider's API key/model variables
+  only in the deployment secret manager. None are persisted in SQLite.
 - Create a `weekly_ops` run with a unique idempotency key, then call its
   `/execute` endpoint. Creation itself does not call a model.
 - A completed run is idempotent: another execute call returns the persisted
@@ -465,7 +465,8 @@ claimed by this release.
   separate execution call.
 - `502`: inspect the audit event's `error_type`, platform status, and token
   availability. The runtime will not convert this into success.
-- Agent-run `502`: verify `OPENAI_API_KEY`, `EAI_OPENAI_MODEL`, model access,
+- Agent-run 502: verify the selected provider, its API key/model variables,
+  model access,
   structured-output compatibility, and the run's persisted task errors. Do not
   replace a failed specialist result with a generated placeholder.
 - Amazon report action `502`: verify all three LWA references, region,
@@ -535,8 +536,8 @@ migrate as `pending` and must be rerun if their result is still needed.
 
 Application code may parallelize the Evidence Analyst and marketplace
 specialists. The model receives strict JSON-shaped outputs and no
-connector/action tools. OpenAI Responses integration is intentionally
-`store=false`; this runtime does not use the Agents SDK. A
+connector/action tools. Provider credentials remain environment-only; this
+runtime does not use a provider Agents SDK. A
 `revision_required` or `rejected` run is complete for audit purposes but is not
 eligible for Daily Brief or Proposal consumers. Inspect its Reviewer artifact
 and rerun with corrected inputs; never bypass the review gate. Live-key smoke

@@ -252,7 +252,7 @@ docs/
 /artifacts/
 /assets/
 /branding/
-/datasets/
+/datasets/*
 /examples/
 /i18n/
 /notebooks/
@@ -294,3 +294,15 @@ docs/
 
 /ecom/
 /tests/test_runtime_bridge.py
+
+# RAG embedding cache
+.rag-cache/
+
+# local runtime artifacts and session tooling
+demo.sqlite-shm
+demo.sqlite-wal
+demo.sqlite.evidence_objects/
+.zcode/
+
+# RAG evaluation QA set ships with the agent (the rest of datasets/ stays local)
+!/datasets/rag_qa.yaml

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import signal
 import sys
 import threading
@@ -266,8 +267,73 @@ def _load_mcp_module():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load MCP adapter from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Loading by file path makes Python drop a __pycache__ next to the source;
+    # inside package_data that would ride into the installable wheel and trip
+    # build_dist --check. Bytecode caching is worthless for a one-shot load.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
+
+
+def _run_rag(args: argparse.Namespace) -> int:
+    """RAG search/eval share one entry: corpus retrieval needs no runtime DB.
+
+    A repo-root ``.env`` (KEY=VALUE lines) is read first so embedding
+    credentials never have to live in the shell profile; existing process
+    env always wins.
+    """
+    from .runtime.retrieval import HybridRetriever, default_llm, load_env_file
+
+    for key, value in load_env_file(Path.cwd() / ".env").items():
+        os.environ.setdefault(key, value)
+
+    dist = Path(args.dist).resolve() if args.dist else _package_data() / "dist"
+    llm = default_llm() if args.llm else None
+    retriever = HybridRetriever(
+        dist_path=dist,
+        cache_path=Path(args.cache) if args.cache else None,
+        llm=llm,
+    )
+    if args.command == "rag-search":
+        result = retriever.search(
+            args.query,
+            top_k=args.top,
+            use_vectors=True,
+            rewrite=llm is not None,
+            # A dedicated reranker model does not need the LLM: enable the
+            # step whenever either backend exists.
+            rerank=llm is not None or retriever.rerank_backend() == "rerank_api",
+            grade=llm is not None,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    from .runtime.rag_evals import load_qa, run_eval, write_report
+
+    qa_items = load_qa(Path(args.qa))
+    ids = [part.strip() for part in args.ids.split(",")] if args.ids else None
+    report = run_eval(
+        retriever,
+        qa_items,
+        top_k=args.top,
+        limit=args.limit,
+        ids=ids,
+        generate=args.generate,
+        rewrite=args.rewrite,
+        rerank=args.rerank,
+    )
+    write_report(report, args.out)
+    summary = {
+        key: report[key]
+        for key in ("generated_at", "corpus", "config", "metrics",
+                    "gold_unverified_count")
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
 
 
 def main() -> int:
@@ -350,6 +416,39 @@ def main() -> int:
     restore = sub.add_parser("restore",help="verify or restore a runtime backup")
     restore.add_argument("--backup",required=True); restore.add_argument("--db",required=True)
     restore.add_argument("--verify-only",action="store_true")
+    rag_search = sub.add_parser(
+        "rag-search",
+        help="run one hybrid retrieval query over the knowledge corpus",
+    )
+    rag_search.add_argument("--query", required=True)
+    rag_search.add_argument("--top", type=int, default=5)
+    rag_search.add_argument("--dist", default=None, help="path to a dist/ corpus (default packaged dist)")
+    rag_search.add_argument("--cache", default=None, help="embedding cache path (default ~/.cache/opc-rag)")
+    rag_search.add_argument("--llm", action="store_true", help="enable LLM steps (rewrite/rerank/grade)")
+    rag_eval = sub.add_parser(
+        "rag-eval",
+        help="run the RAG evaluation QA set (use --limit or --ids to keep it small)",
+    )
+    rag_eval.add_argument("--qa", default="datasets/rag_qa.yaml")
+    rag_eval.add_argument("--limit", type=int, default=None, help="only run the first N cases")
+    rag_eval.add_argument("--ids", default=None, help="comma-separated QA case ids")
+    rag_eval.add_argument("--top", type=int, default=10)
+    rag_eval.add_argument("--dist", default=None)
+    rag_eval.add_argument("--cache", default=None)
+    rag_eval.add_argument("--llm", action="store_true", help="enable LLM steps")
+    rag_eval.add_argument(
+        "--rewrite", action="store_true",
+        help="LLM query rewrite before retrieval (needs an LLM)",
+    )
+    rag_eval.add_argument(
+        "--rerank", action="store_true",
+        help="rerank fused candidates (dedicated reranker model, LLM fallback)",
+    )
+    rag_eval.add_argument(
+        "--generate", action="store_true",
+        help="also generate answers and check faithfulness (needs an LLM)",
+    )
+    rag_eval.add_argument("--out", default=None, help="write the full JSON report to this path")
     args = parser.parse_args()
     if args.command == "mcp":
         module = _load_mcp_module()
@@ -404,6 +503,8 @@ def main() -> int:
         except Exception as exc:
             print(json.dumps({"status":"failed","error_code":("BACKUP_FAILED" if args.command=="backup" else "RESTORE_FAILED"),"error_type":type(exc).__name__},sort_keys=True),flush=True)
             return 2
+    if args.command in {"rag-search", "rag-eval"}:
+        return _run_rag(args)
     app = RuntimeApplication(Database(args.db))
     if args.command == "init":
         print(app.bootstrap(args.name, args.email))

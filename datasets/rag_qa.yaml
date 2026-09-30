@@ -1,0 +1,467 @@
+# RAG evaluation QA set — Commerce Agent OS knowledge corpus.
+#
+# Coverage: 商品 (listing/pricing/advertising/product research), 库存
+# (inventory/FBA/replenishment), 平台规则 (platform rules/compliance/IP).
+#
+# Gold standard conventions:
+#   gold_chapter   — chapter id from dist/knowledge/index.json (required)
+#   gold_heading   — optional substring the relevant chunk's heading must
+#                    contain (use only when confident)
+#   gold_constraint— optional ontology constraint id; the packaged constraint
+#                    chunk also counts as relevant
+#   answer / source— the fact and its provenance (constraint id or chapter
+#                    section) so every number stays traceable, matching the
+#                    repo's content-gate culture.
+#
+# Cases whose gold matches no chunk at all are flagged "gold_unverified" in
+# the eval report instead of silently dragging metrics down.
+
+# ---------- 商品 ----------
+
+- id: prod-001
+  category: 商品
+  question: "Amazon listing 标题最多允许多少个字符？"
+  gold_chapter: a-operators__a2-listing-optimization
+  gold_constraint: amazon.listing.title.max_length
+  answer: "200 字符"
+  source: "ontology:amazon.listing.title.max_length"
+
+- id: prod-002
+  category: 商品
+  question: "ASIN 应该放进 Search Terms 里吗？"
+  gold_chapter: a-operators__a2-listing-optimization
+  gold_constraint: amazon.asin.value.unique_identifier
+  answer: "不应该。ASIN 是每个上架商品唯一的标识编号，放进 Search Terms 没有索引价值。"
+  source: "ontology:amazon.asin.value.unique_identifier (src/a-operators/a2-listing-optimization.md#35-search-terms-优)"
+
+- id: prod-003
+  category: 商品
+  question: "Amazon 产品星级评分的范围是什么？US 市场买家一般从几星开始考虑？"
+  gold_chapter: a-operators__a2-listing-optimization
+  gold_constraint: amazon.rating.scale_1_5
+  answer: "评分范围 1-5 星；US 市场 4.0+ 星才进入买家考虑范围。"
+  source: "ontology:amazon.rating.scale_1_5 (src/a-operators/a2-listing-optimization.md#73-listing-本地化的文化)"
+
+- id: prod-004
+  category: 商品
+  question: "Amazon 的 AI 购物助手 Rufus 会引用 Review 里的内容来回答用户问题吗？"
+  gold_chapter: a-operators__a2-listing-optimization
+  gold_constraint: amazon.review.rufus_cited
+  answer: "会。Rufus 会引用 Review 内容回答用户问题，好 Review 比好的 Listing 文案更重要。"
+  source: "ontology:amazon.review.rufus_cited (src/a-operators/a2-listing-optimization.md#71-amazon-rufus-优)"
+
+- id: prod-005
+  category: 商品
+  question: "Amazon Buy Box 算法中价格（含运费）的权重大概是多少？"
+  gold_chapter: a-operators__a8-pricing-strategy
+  gold_constraint: amazon.buy_box.price_weight
+  answer: "约 25-35%，是赢得 Buy Box 的关键因素之一。"
+  source: "ontology:amazon.buy_box.price_weight (src/a-operators/a8-pricing-strategy.md#21-amazon-buy-box-定价策)"
+
+- id: prod-006
+  category: 商品
+  question: "Amazon 上有多大比例的销售来自 Buy Box？"
+  gold_chapter: a-operators__a8-pricing-strategy
+  gold_constraint: amazon.buy_box.sales_share
+  answer: "超过 80% 的销售来自 Buy Box，每个 ASIN 只有一名卖家获得。"
+  source: "ontology:amazon.buy_box.sales_share (src/a-operators/a8-pricing-strategy.md#21-amazon-buy-box-定价策)"
+
+- id: prod-007
+  category: 商品
+  question: "Amazon Coupon 需要多少折扣起步？每次使用的费用是多少？"
+  gold_chapter: a-operators__a8-pricing-strategy
+  gold_constraint: amazon.deal.coupon.min_discount
+  answer: "Coupon 需 5%+ 折扣，费用 $0.60/次使用。"
+  source: "ontology:amazon.deal.coupon.min_discount (src/a-operators/a8-pricing-strategy.md#41-amazon-促销类型与定价策略)"
+
+- id: prod-008
+  category: 商品
+  question: "Amazon Lightning Deal 需要多少折扣？费用大概多少？适合什么场景？"
+  gold_chapter: a-operators__a8-pricing-strategy
+  gold_constraint: amazon.deal.lightning_deal.min_discount
+  answer: "需 15-20%+ 折扣，费用 $150-500/次，适合清库存、冲排名。"
+  source: "ontology:amazon.deal.lightning_deal.min_discount (src/a-operators/a8-pricing-strategy.md#41-amazon-促销类型与定价策略)"
+
+- id: prod-009
+  category: 商品
+  question: "广告里 CVR 的计算公式是什么？健康的 CVR 大概是多少？"
+  gold_chapter: a-operators__a3-advertising
+  gold_constraint: amazon.conversion.value.cvr_formula
+  answer: "CVR = 订单数 ÷ 点击数 × 100%，健康值 >8%。"
+  source: "ontology:amazon.conversion.value.cvr_formula (src/a-operators/a3-advertising.md#31-搜索词报告分析)"
+
+- id: prod-010
+  category: 商品
+  question: "广告 CPC 怎么计算？"
+  gold_chapter: a-operators__a3-advertising
+  gold_constraint: amazon.click.value.cpc_denominator
+  answer: "CPC = 广告花费 ÷ 点击数。"
+  source: "ontology:amazon.click.value.cpc_denominator (src/a-operators/a3-advertising.md#31-搜索词报告分析)"
+
+- id: prod-011
+  category: 商品
+  question: "广告某个词展示量很高但零点击，应该怎么诊断？可以直接忽略吗？"
+  gold_chapter: a-operators__a3-advertising
+  gold_constraint: amazon.impression.high_zero_click_diagnostic
+  answer: "不能直接忽略。高展示+零点击说明广告展示了但没人点，要检查主图或价格。"
+  source: "ontology:amazon.impression.high_zero_click_diagnostic (src/a-operators/a3-advertising.md#54-数据相关陷阱)"
+
+- id: prod-012
+  category: 商品
+  question: "Amazon DSP 按什么方式计价？最低预算门槛大概多少？"
+  gold_chapter: a-operators__a3-advertising
+  gold_constraint: amazon.cpm.value.pricing_model
+  answer: "按 CPM（每千次展示成本）计价，最低预算通常 $10,000+/月。"
+  source: "ontology:amazon.cpm.value.pricing_model (src/a-operators/a3-advertising.md#13-广告类型全景)"
+
+- id: prod-013
+  category: 商品
+  question: "用 BSR 做选品竞争分析时，应该选 BSR 前多少名的竞品？BSR 多久更新一次？"
+  gold_chapter: a-operators__a1-product-research
+  gold_constraint: amazon.bsr.update_hourly
+  answer: "BSR 每小时更新，数字越小销量越高；选品时用 BSR 前 5-10 的竞品做竞争分析。"
+  source: "ontology:amazon.bsr.update_hourly (src/a-operators/a1-product-research.md)"
+
+- id: prod-014
+  category: 商品
+  question: "独立站产品页的 Product Schema（JSON-LD）必须包含哪些字段，才能被 AI 搜索引擎引用？"
+  gold_chapter: d-platforms__shopify-ai-guide
+  gold_constraint: shopify.schema_markup.required_fields
+  answer: "必须包含价格、库存、评分；AI 引擎（ChatGPT 等）靠这些字段引用产品信息。"
+  source: "ontology:shopify.schema_markup.required_fields (src/d-platforms/shopify-ai-guide.md#213-geo-优化实操-让-ai-推荐你的产品)"
+
+- id: prod-015
+  category: 商品
+  question: "Temu 主图有什么强制性要求？"
+  gold_chapter: d-platforms__d5-temu-seller-guide
+  gold_constraint: temu.product_image.main.white_background
+  answer: "主图必须为白底图（全托管与半托管均强制），平台按图片质量分配流量。"
+  source: "ontology:temu.product_image.main.white_background (src/d-platforms/d5-temu-seller-guide.md#32-产品图片-ai-优化)"
+
+- id: prod-016
+  category: 商品
+  question: "Temu 的图片尺寸和数量要求是什么？"
+  gold_chapter: d-platforms__d5-temu-seller-guide
+  gold_constraint: temu.product_image.min_size
+  answer: "尺寸 ≥800x800px，数量 5-8 张（全托管与半托管一致）。"
+  source: "ontology:temu.product_image.min_size / temu.product_image.count (src/d-platforms/d5-temu-seller-guide.md#32-产品图片-ai-优化)"
+
+# ---------- 库存 ----------
+
+- id: inv-001
+  category: 库存
+  question: "Amazon FBA 的 IPI 分数低于多少会被限制仓储容量？目标值是多少？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: amazon.ipi.score.min_400
+  answer: "当前阈值 400 分；低于阈值会被限制 FBA 仓储容量，需从售罄率等维度改善。"
+  source: "ontology:amazon.ipi.score.min_400 (src/a-operators/a5-inventory.md#38-ipi-score-改善方案)"
+
+- id: inv-002
+  category: 库存
+  question: "Stranded Inventory（ stranded ASIN 库存）的管理目标是什么？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: amazon.fba.inventory.stranded_target_zero
+  answer: "目标为 0 个 ASIN，它是最容易修复的 IPI 扣分项。"
+  source: "ontology:amazon.fba.inventory.stranded_target_zero (src/a-operators/a5-inventory.md#12-amazon-fba-库存关键指标)"
+
+- id: inv-003
+  category: 库存
+  question: "计算实际可用库存时，公式是什么？忽略在途库存会有什么后果？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: inventory.in_transit_inventory.available_stock_formula
+  answer: "实际可用库存 = 当前库存 + 在途库存；忽略在途会低估可支撑天数，导致过度补货或误判断货。"
+  source: "ontology:inventory.in_transit_inventory.available_stock_formula (src/a-operators/a5-inventory.md#31-补货决策分析)"
+
+- id: inv-004
+  category: 库存
+  question: "同时做 Amazon FBA 和 Shopify 独立站时，怎么防止同一批库存超卖？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraints:
+    - inventory.warehouse.multi_channel_pool
+    - inventory.fbm_inventory.multi_channel_pool
+  answer: "由库存中心系统（总库存池）统一协调 FBA 仓、自建仓、3PL 仓；自发货库存也必须纳入总库存池同步管理。"
+  source: "ontology:inventory.warehouse.multi_channel_pool / inventory.fbm_inventory.multi_channel_pool (src/a-operators/a5-inventory.md#62-多渠道库存同步)"
+
+- id: inv-005
+  category: 库存
+  question: "只有一个供应商，风险大吗？应该怎么做？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: inventory.supplier.backup_required
+  answer: "单一供应商风险极高，一旦出问题就断货；必须建立备选供应商并追踪历史交期数据（春节/国庆前后产能大幅下降）。"
+  source: "ontology:inventory.supplier.backup_required (src/a-operators/a5-inventory.md#37-供应商交期风险评估)"
+
+- id: inv-006
+  category: 库存
+  question: "补货量不是供应商 MOQ 的整数倍时怎么处理？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: inventory.moq.order_rounding
+  answer: "补货量需向上取整到 MOQ 的倍数，MOQ 随供应商评估一并收集。"
+  source: "ontology:inventory.moq.order_rounding (src/a-operators/a5-inventory.md#37-供应商交期风险评估)"
+
+- id: inv-007
+  category: 库存
+  question: "BFCM（黑五网一）大促备货需要提前多久发货？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: amazon.bfcm.prep_lead_time
+  answer: "需提前 6-8 周发货，是一个 8 周的系统化过程；FBA 入仓在大促前 2 周左右完成。"
+  source: "ontology:amazon.bfcm.prep_lead_time (src/a-operators/a5-inventory.md#34-大促备货策略prime-day--bfcm)"
+
+- id: inv-008
+  category: 库存
+  question: "Amazon 上的 Prime 标识和 FBA 有什么关系？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: amazon.prime.fba_eligibility
+  answer: "Prime 资格依赖 FBA 履约；Prime 标识影响 Buy Box 权重和转化。"
+  source: "ontology:amazon.prime.fba_eligibility (src/a-operators/a5-inventory.md)"
+
+- id: inv-009
+  category: 库存
+  question: "做库存计划之前，应该先理解哪些库存方法论的基础？"
+  gold_chapter: a-operators__a5-inventory
+  gold_heading: "库存方法论"
+  answer: "先理解库存方法论基础（需求预测、安全库存、补货点等），再进入 AI 工具与实战工作流。"
+  source: "src/a-operators/a5-inventory.md#1-库存方法论"
+
+- id: inv-010
+  category: 库存
+  question: "多渠道（Amazon + Shopify + 独立站）库存同步这一节讲的是什么问题？"
+  gold_chapter: a-operators__a5-inventory
+  gold_constraint: inventory.warehouse.multi_channel_pool
+  answer: "讲多渠道场景下用总库存池统一协调各仓库，避免同一批库存多渠道销售时因不同步而超卖。"
+  source: "src/a-operators/a5-inventory.md#62-多渠道库存同步"
+
+# ---------- 平台规则 ----------
+
+- id: rule-001
+  category: 平台规则
+  question: "Temu 半托管订单必须在多长时间内发货？美国本土配送时效要求是多少天？"
+  gold_chapter: d-platforms__d5-temu-seller-guide
+  gold_constraint: temu.semi_managed.ship_out_time
+  answer: "24 小时内从海外仓发货，美国本土配送时效 2-5 天。"
+  source: "ontology:temu.semi_managed.ship_out_time (src/d-platforms/d5-temu-seller-guide.md#44-temu-半托管模式深度实操)"
+
+- id: rule-002
+  category: 平台规则
+  question: "Temu 半托管对海外仓库存量有什么要求？仓库位置优先哪里？"
+  gold_chapter: d-platforms__d5-temu-seller-guide
+  gold_constraint: temu.semi_managed.inventory_min
+  answer: "库存要求至少 30 天销量，仓库位置优先美国（其次欧洲、东南亚）。"
+  source: "ontology:temu.semi_managed.inventory_min (src/d-platforms/d5-temu-seller-guide.md#44-temu-半托管模式深度实操)"
+
+- id: rule-003
+  category: 平台规则
+  question: "Temu 全托管模式下卖家有定价权吗？"
+  gold_chapter: d-platforms__d5-temu-seller-guide
+  gold_constraint: temu.fully_managed.pricing_control
+  answer: "没有。全托管模式下 Temu 决定零售价，卖家只提供供货价；核心排名因素为价格 > 销量 > 评价 > 图。"
+  source: "ontology:temu.fully_managed.pricing_control (src/d-platforms/d5-temu-seller-guide.md#12-全托管-vs-半托管模式详解)"
+
+- id: rule-004
+  category: 平台规则
+  question: "Temu 有站内广告系统吗？和 Amazon PPC 有什么本质区别？"
+  gold_chapter: d-platforms__d5-temu-seller-guide
+  gold_constraint: temu.no_ad_system
+  answer: "没有站内广告系统。卖家几乎无法通过运营技巧影响排名，Temu 本质是供应链平台而非运营平台。"
+  source: "ontology:temu.no_ad_system (src/d-platforms/d5-temu-seller-guide.md#13-temu-的核心运营逻辑)"
+
+- id: rule-005
+  category: 平台规则
+  question: "Walmart 的取消率（Cancellation Rate）红线是多少？"
+  gold_chapter: d-platforms__d4-walmart-ai-guide
+  gold_constraint: walmart.performance.cancellation_rate
+  answer: "需 < 2%。"
+  source: "ontology:walmart.performance.cancellation_rate (src/d-platforms/d4-walmart-ai-guide.md#62-walmart-buy-box-深度)"
+
+- id: rule-006
+  category: 平台规则
+  question: "白牌无码产品（没有 UPC/GTIN）能在 Walmart 上架吗？"
+  gold_chapter: d-platforms__d4-walmart-ai-guide
+  gold_constraint: walmart.listing.gtin.required
+  answer: "不能。Walmart 要求每个产品有唯一 UPC/GTIN，商品标识与品类准入比 Amazon 严。"
+  source: "ontology:walmart.listing.gtin.required (src/d-platforms/d4-walmart-ai-guide.md#52-详细迁移清单)"
+
+- id: rule-007
+  category: 平台规则
+  question: "Shopee 对 12 小时聊天回复率的要求是多少？不达标会怎样？"
+  gold_chapter: d-platforms__d6-southeast-asia-ai-guide
+  gold_constraint: shopee.performance.chat_response_rate
+  answer: "回复率需 >90%，低于标准会影响店铺评分和搜索排名。"
+  source: "ontology:shopee.performance.chat_response_rate (src/d-platforms/d6-southeast-asia-ai-guide.md#陷阱-3回复率低于-90)"
+
+- id: rule-008
+  category: 平台规则
+  question: "Shopee 的取消率和违规扣分的红线分别是多少？"
+  gold_chapter: d-platforms__d6-southeast-asia-ai-guide
+  gold_constraint: shopee.performance.cancellation_rate
+  answer: "取消率需 <5%；违规扣分（Penalty Points）需 <3 分。"
+  source: "ontology:shopee.performance.cancellation_rate / shopee.performance.penalty_points (src/d-platforms/d6-southeast-asia-ai-guide.md#61-关键指标体系)"
+
+- id: rule-009
+  category: 平台规则
+  question: "Lazada 对产品图片数量有什么最低要求？标题格式是什么？"
+  gold_chapter: d-platforms__d6-southeast-asia-ai-guide
+  gold_constraint: lazada.product_image.count_min
+  answer: "图片 ≥4 张、白底主图；标题格式为品牌+产品名+核心属性。"
+  source: "ontology:lazada.product_image.count_min / lazada.product.title.format (src/d-platforms/d6-southeast-asia-ai-guide.md#54-lazada-glob)"
+
+- id: rule-010
+  category: 平台规则
+  question: "eBay 标题最多允许多少个字符？二手/翻新品标题有什么额外要求？"
+  gold_chapter: d-platforms__d9-ebay-ai-guide
+  gold_constraint: ebay.listing.title.max_length
+  answer: "80 字符内；二手/翻新品需含品相词（如 Excellent）。"
+  source: "ontology:ebay.listing.title.max_length (src/d-platforms/d9-ebay-ai-guide.md#22-二手翻新品-ai-描述生成ebay-独有场)"
+
+- id: rule-011
+  category: 平台规则
+  question: "eBay 二手/翻新品 Listing 必须包含什么内容？"
+  gold_chapter: d-platforms__d9-ebay-ai-guide
+  gold_constraint: ebay.listing.condition.description.required
+  answer: "必须包含详细品相描述（外观/功能/电池/配件/包装）与实物图，并含免责声明。"
+  source: "ontology:ebay.listing.condition.description.required (src/d-platforms/d9-ebay-ai-guide.md#22-二手翻新品-ai-描述生成ebay-独有场)"
+
+- id: rule-012
+  category: 平台规则
+  question: "韩国 Coupang 对哪些产品强制要求 KC 安全认证？"
+  gold_chapter: d-platforms__d11-coupang-korea-ai-guide
+  gold_constraint: coupang.kc_certification.mandatory
+  answer: "电子产品、儿童用品、家电强制要求 KC 认证，没有不能销售；电子/电气产品还需 KC 电磁兼容认证。"
+  source: "ontology:coupang.kc_certification.mandatory (src/d-platforms/d11-coupang-korea-ai-guide.md#43-kc-认证要求)"
+
+- id: rule-013
+  category: 平台规则
+  question: "中国公司能直接入驻德国 Otto 平台吗？需要什么条件？"
+  gold_chapter: d-platforms__d13-europe-marketplaces-guide
+  gold_constraint: otto.seller.legal_entity
+  answer: "不能直接入驻。需德国或荷兰公司法律形式与 VAT 税号，可通过当地法人实体或代运营。"
+  source: "ontology:otto.seller.legal_entity (src/d-platforms/d13-europe-marketplaces-guide.md#22-入驻要求2026)"
+
+- id: rule-014
+  category: 平台规则
+  question: "Otto 对 EPR 和德国包装法（VerpackG）的合规要求是什么？不合规会怎样？"
+  gold_chapter: d-platforms__d13-europe-marketplaces-guide
+  gold_constraint: otto.compliance.epr_verpackg
+  answer: "强制 EPR 注册与 VerpackG 注册，不合规将立即暂停销售；电子产品还需 WEEE 注册。"
+  source: "ontology:otto.compliance.epr_verpackg (src/d-platforms/d13-europe-marketplaces-guide.md#22-入驻要求2026)"
+
+- id: rule-015
+  category: 平台规则
+  question: "Zalando Partner 必须接受怎样的退货政策？"
+  gold_chapter: d-platforms__d13-europe-marketplaces-guide
+  gold_constraint: zalando.partner.return_policy
+  answer: "必须接受 Zalando 的 100 天免费退货政策。"
+  source: "ontology:zalando.partner.return_policy (src/d-platforms/d13-europe-marketplaces-guide.md#33-入驻要求)"
+
+- id: rule-016
+  category: 平台规则
+  question: "Mercado Libre 的标题长度上限是多少？和 Amazon 比有什么不同？"
+  gold_chapter: d-platforms__d7-mercado-libre-ai-guide
+  gold_constraint: mercado_libre.listing.title.max_length
+  answer: "60 字符（Amazon 是 200），格式：品牌+产品+核心属性。"
+  source: "ontology:mercado_libre.listing.title.max_length (src/d-platforms/d7-mercado-libre-ai-guide.md#22-mercado-libr)"
+
+- id: rule-017
+  category: 平台规则
+  question: "在拉美市场卖货必须开启分期付款（cuotas）吗？为什么？"
+  gold_chapter: d-platforms__d7-mercado-libre-ai-guide
+  gold_constraint: mercado_libre.installments.required
+  answer: "必须开启。拉美消费者习惯 12-18 期免息分期，不开分期转化率极低；提供免息分期的产品排名更高。"
+  source: "ontology:mercado_libre.installments.required (src/d-platforms/d7-mercado-libre-ai-guide.md#43-拉美市场特有挑战)"
+
+- id: rule-018
+  category: 平台规则
+  question: "Mercado Libre 上可以用英语 Listing 吗？"
+  gold_chapter: d-platforms__d7-mercado-libre-ai-guide
+  gold_constraint: mercado_libre.listing.language.required
+  answer: "不可以。CBT 必须提供西语/葡语 Listing；巴西必须用巴西葡语，西语区需指定国家。"
+  source: "ontology:mercado_libre.listing.language.required (src/d-platforms/d7-mercado-libre-ai-guide.md#41-cbtcross-bor)"
+
+- id: rule-019
+  category: 平台规则
+  question: "Rakuten 允许卖家给购买过的用户发营销邮件吗？和 Amazon 有什么不同？"
+  gold_chapter: d-platforms__d8-rakuten-japan-ai-guide
+  gold_constraint: rakuten.mail.rmail.allowed
+  answer: "允许。Rakuten 鼓励通过 R-Mail 给购买过的用户发邮件（须含退订链接），与 Amazon 禁止联系买家不同。"
+  source: "ontology:rakuten.mail.rmail.allowed (src/d-platforms/d8-rakuten-japan-ai-guide.md#23-r-mail-邮件营销)"
+
+- id: rule-020
+  category: 平台规则
+  question: "含锂电池的产品跨境运输和申报必须提供什么文件？"
+  gold_chapter: a-operators__a6-compliance
+  gold_constraint: compliance.safety_data_sheet.required_for_lithium
+  answer: "必须提供 UN38.3 测试报告 + MSDS/SDS，并遵守运输限制。"
+  source: "ontology:compliance.safety_data_sheet.required_for_lithium (src/a-operators/a6-compliance.md#附录合规速查表)"
+
+- id: rule-021
+  category: 平台规则
+  question: "欧盟符合性声明（DoC）需要引用哪些内容？什么算合规？"
+  gold_chapter: a-operators__a6-compliance
+  gold_constraint: eu.declaration_of_conformity.required_before_listing
+  answer: "需引用适用指令（LVD、EMC、RoHS、RED）与协调标准；没有正式合规文档就上架不合规。"
+  source: "ontology:eu.declaration_of_conformity.required_before_listing (src/a-operators/a6-compliance.md#35-合规文档生成)"
+
+- id: rule-022
+  category: 平台规则
+  question: "专利排查应该在什么阶段做？主要检索哪些专利库？"
+  gold_chapter: a-operators__a12-ip-protection
+  gold_constraint: ip.patent.screen_before_launch
+  answer: "选品阶段必须做专利排查：US 用 USPTO、EU 用 Espacenet、JP 用 J-PlatPat、CN 用 CNIPA。"
+  source: "ontology:ip.patent.screen_before_launch (src/a-operators/a12-ip-protection.md#21-选品阶段的专利排查)"
+
+- id: rule-023
+  category: 平台规则
+  question: "只查商标不查外观设计专利，有什么风险？"
+  gold_chapter: a-operators__a12-ip-protection
+  gold_constraint: ip.patent.design_patent_risk
+  answer: "专利侵权判断看功能与外观而非名称；外观设计专利侵权门槛低，不能只查商标不查外观专利。"
+  source: "ontology:ip.patent.design_patent_risk (src/a-operators/a12-ip-protection.md#82-只查商标不查外观专利)"
+
+# ---------- 概念 / 方法论（章节级 gold，无对应 constraint） ----------
+
+- id: concept-001
+  category: 商品
+  question: "选品阶段除了看市场概况，还需要完成哪些分析模块才能形成决策？"
+  gold_chapter: a-operators__a1-product-research
+  gold_heading: "利润模型"
+  answer: "市场概况、竞争分析、需求分析、利润模型、供应链、风险评估，最后形成决策。"
+  source: "src/a-operators/a1-product-research.md（选品分析模块章节）"
+
+- id: concept-002
+  category: 商品
+  question: "为什么说定价是 AI 最被低估的应用场景？这一章的方法论叫什么？"
+  gold_chapter: a-operators__a8-pricing-strategy
+  gold_heading: "动态定价方法论"
+  answer: "该章提出动态定价方法论，并覆盖 AI 竞品价格监控、促销定价优化与多平台定价策略。"
+  source: "src/a-operators/a8-pricing-strategy.md#2-动态定价方法论"
+
+- id: concept-003
+  category: 平台规则
+  question: "做 AI 应用本身也要合规吗？欧盟对 AI 的监管法规叫什么？"
+  gold_chapter: a-operators__a6-compliance
+  gold_heading: "EU AI Act"
+  answer: "要。EU AI Act 对 AI 使用本身提出合规义务，合规章节有专门小节。"
+  source: "src/a-operators/a6-compliance.md#5-EU-AI-Act"
+
+- id: concept-004
+  category: 商品
+  question: "为 Agent 优化 Listing 是什么意思？当读 Listing 的不是人时要注意什么？"
+  gold_chapter: a-operators__a2-listing-optimization
+  gold_heading: "为 Agent 优化"
+  answer: "该节讨论 AI Agent 读取 Listing 场景下的优化要点——结构化、可解析、信息完整。"
+  source: "src/a-operators/a2-listing-optimization.md#5-为-Agent-优化"
+
+- id: concept-005
+  category: 商品
+  question: "Amazon Brand Store 的页面结构建议是怎样的？开 Brand Store 需要什么前提？"
+  gold_chapter: a-operators__a10-brand-building
+  gold_constraint: amazon.storefront.structure
+  answer: "首页（Hero Banner + 品类导航 + 热销推荐）+ 品类页 + 品牌故事页 + 促销页（可选）；前提是完成 Amazon Brand Registry。"
+  source: "ontology:amazon.storefront.structure / amazon.storefront.requires_brand_registry (src/a-operators/a10-brand-building.md)"
+
+- id: concept-006
+  category: 库存
+  question: "SKU 需求预测模型这一章对预测精度有什么量化目标？"
+  gold_chapter: b-developers__b2-prediction-models
+  gold_heading: "模型评估"
+  answer: "用回测（backtesting）验证模型，MAPE < 30% 作为预测精度的量化目标。"
+  source: "src/b-developers/b2-prediction-models.md#4-模型评估（4.2 回测）"

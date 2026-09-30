@@ -3248,8 +3248,13 @@ components:
       additionalProperties: false
       required: [allowed_tools, max_tool_calls]
       properties:
-        allowed_tools: {type: array, maxItems: 0, items: {type: string}}
-        max_tool_calls: {type: integer, minimum: 0, maximum: 0}
+        allowed_tools:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            enum: [opc.search_knowledge, opc.get_constraints, opc.read_chapter, opc.hybrid_search]
+        max_tool_calls: {type: integer, minimum: 0, maximum: 8}
     ReviewerVerdict:
       type: object
       additionalProperties: false

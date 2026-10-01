@@ -643,6 +643,12 @@ class HybridRetriever:
     environ: Mapping[str, str] | None = None
     transport: Callable[..., Any] = urlopen
     llm: Any | None = None
+    # Optional Milvus backend for the dense leg (see vector_store.py). When
+    # set, vector recall goes to Milvus; when None, the original in-process
+    # brute-force cosine over the content-hash cache file is used. Both must
+    # return the same ranking for the same query — the 55-case eval is the
+    # referee.
+    vector_store: Any | None = None
     timeout_seconds: int = 120
 
     def __post_init__(self) -> None:
@@ -653,6 +659,7 @@ class HybridRetriever:
         self._vector_norms: dict[str, float] = {}
         self._vectors_ready = False
         self._vector_degraded_reason: str | None = None
+        self._milvus_client: Any | None = None
 
     # -- corpus --
 
@@ -865,7 +872,7 @@ class HybridRetriever:
                 "excerpt": chunk.text[:EXCERPT_CHARS],
                 "score": round(score, 6),
             })
-        mode = "hybrid" if self._vectors_ready and use_vectors else "bm25"
+        mode = "hybrid" if use_vectors and (self._vectors_ready or self.vector_store is not None) else "bm25"
         return {
             "query": query,
             "effective_query": effective_query,
@@ -884,7 +891,24 @@ class HybridRetriever:
         warnings: list[str] = []
         bm25_hits = self._ensure_bm25().search(query, top_n=candidate_k)
         rankings = [[chunk_id for chunk_id, _score in bm25_hits]]
-        if use_vectors and self._ensure_vectors():
+        if use_vectors and self.vector_store is not None:
+            query_vector = self._query_vector(query)
+            if query_vector is None:
+                warnings.append("query_embedding_failed")
+            else:
+                try:
+                    if self._milvus_client is None:
+                        self._milvus_client = self.vector_store.client()
+                    hits = self.vector_store.search(
+                        self._milvus_client, query_vector, candidate_k
+                    )
+                except Exception as exc:  # fail soft: keyword leg must survive
+                    warnings.append(f"vector_store_search_failed: {type(exc).__name__}: {exc}")
+                    log.warning("Milvus search failed: %s", exc)
+                    self._milvus_client = None
+                else:
+                    rankings.append([chunk_id for chunk_id, _score in hits])
+        elif use_vectors and self._ensure_vectors():
             query_vector = self._query_vector(query)
             if query_vector is not None:
                 scored = []

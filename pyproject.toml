@@ -43,6 +43,9 @@ mcp = [
 xlsx = [
   "openpyxl>=3.1,<4",
 ]
+rag = [
+  "pymilvus>=2.5,<3",
+]
 dev = [
   "pytest>=8,<9",
   "openpyxl>=3.1,<4",

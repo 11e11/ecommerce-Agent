@@ -280,24 +280,45 @@ def _load_mcp_module():
 
 
 def _run_rag(args: argparse.Namespace) -> int:
-    """RAG search/eval share one entry: corpus retrieval needs no runtime DB.
+    """RAG search/eval/index share one entry: corpus work needs no runtime DB.
 
     A repo-root ``.env`` (KEY=VALUE lines) is read first so embedding
     credentials never have to live in the shell profile; existing process
     env always wins.
     """
-    from .runtime.retrieval import HybridRetriever, default_llm, load_env_file
+    from .runtime.retrieval import (
+        EmbeddingClient,
+        HybridRetriever,
+        default_llm,
+        load_env_file,
+    )
 
     for key, value in load_env_file(Path.cwd() / ".env").items():
         os.environ.setdefault(key, value)
 
     dist = Path(args.dist).resolve() if args.dist else _package_data() / "dist"
-    llm = default_llm() if args.llm else None
+    llm = default_llm() if getattr(args, "llm", False) else None
     retriever = HybridRetriever(
         dist_path=dist,
         cache_path=Path(args.cache) if args.cache else None,
         llm=llm,
     )
+    if getattr(args, "vector_backend", None) == "milvus":
+        from .runtime.vector_store import MilvusVectorStore
+
+        retriever.vector_store = MilvusVectorStore()
+    if args.command == "rag-index":
+        from .runtime.vector_store import IndexBuilder, MilvusVectorStore
+
+        store = MilvusVectorStore()
+        builder = IndexBuilder(
+            dist_path=dist,
+            store=store,
+            embed_client=EmbeddingClient(),
+            cache_path=Path(args.cache) if args.cache else None,
+        )
+        print(json.dumps(builder.build(), ensure_ascii=False, sort_keys=True))
+        return 0
     if args.command == "rag-search":
         result = retriever.search(
             args.query,
@@ -425,6 +446,10 @@ def main() -> int:
     rag_search.add_argument("--dist", default=None, help="path to a dist/ corpus (default packaged dist)")
     rag_search.add_argument("--cache", default=None, help="embedding cache path (default ~/.cache/opc-rag)")
     rag_search.add_argument("--llm", action="store_true", help="enable LLM steps (rewrite/rerank/grade)")
+    rag_search.add_argument(
+        "--vector-backend", choices=["file", "milvus"], default="file",
+        help="dense-leg storage: local cache file (exact) or Milvus",
+    )
     rag_eval = sub.add_parser(
         "rag-eval",
         help="run the RAG evaluation QA set (use --limit or --ids to keep it small)",
@@ -436,6 +461,10 @@ def main() -> int:
     rag_eval.add_argument("--dist", default=None)
     rag_eval.add_argument("--cache", default=None)
     rag_eval.add_argument("--llm", action="store_true", help="enable LLM steps")
+    rag_eval.add_argument(
+        "--vector-backend", choices=["file", "milvus"], default="file",
+        help="dense-leg storage: local cache file (exact) or Milvus",
+    )
     rag_eval.add_argument(
         "--rewrite", action="store_true",
         help="LLM query rewrite before retrieval (needs an LLM)",
@@ -449,6 +478,12 @@ def main() -> int:
         help="also generate answers and check faithfulness (needs an LLM)",
     )
     rag_eval.add_argument("--out", default=None, help="write the full JSON report to this path")
+    rag_index = sub.add_parser(
+        "rag-index",
+        help="chunk the corpus and sync vectors into Milvus (idempotent)",
+    )
+    rag_index.add_argument("--dist", default=None, help="path to a dist/ corpus (default packaged dist)")
+    rag_index.add_argument("--cache", default=None, help="embedding cache path (default ~/.cache/opc-rag)")
     args = parser.parse_args()
     if args.command == "mcp":
         module = _load_mcp_module()
@@ -503,7 +538,7 @@ def main() -> int:
         except Exception as exc:
             print(json.dumps({"status":"failed","error_code":("BACKUP_FAILED" if args.command=="backup" else "RESTORE_FAILED"),"error_type":type(exc).__name__},sort_keys=True),flush=True)
             return 2
-    if args.command in {"rag-search", "rag-eval"}:
+    if args.command in {"rag-search", "rag-eval", "rag-index"}:
         return _run_rag(args)
     app = RuntimeApplication(Database(args.db))
     if args.command == "init":

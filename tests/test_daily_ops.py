@@ -61,6 +61,8 @@ class DailyProvider:
             }]
             return {
                 "verdict": self.verdict, "issues": issues,
+                "revision_target": "manager" if self.verdict == "revision_required" else "none",
+                "revision_platform": "",
                 "evidence_refs": [source["source_id"]],
                 "limitations": payload["manager_report"]["limitations"],
             }
@@ -96,7 +98,7 @@ def create_schedule(app, owner, **overrides):
         graph_version_id = app.agent_graphs.ensure_default(owner)["id"]
     values = {
         "name": "Amazon daily review", "platform": "amazon",
-        "objective": "Review Amazon operating priorities for this local business day.",
+        "objective": "优化 Amazon listing title for this local business day.",
         "timezone_name": "America/New_York", "local_time": "08:00",
         "graph_version_id": graph_version_id,
         "evidence_selectors": [{"report_type": "amazon_business_report"}],
@@ -538,7 +540,7 @@ def test_approved_orphan_agent_run_is_ineligible_downstream(tmp_path: Path):
     agent_run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Complete an old Daily Ops attempt after its lease is reclaimed.",
+            "优化 Amazon listing title after the old Daily Ops lease is reclaimed.",
         None,
         "orphan-agent-run",
         "orphan-agent-run-request",
@@ -825,7 +827,7 @@ def test_daily_ops_http_routes_rbac_tenant_and_brief_states(tmp_path: Path):
         {
             "name": "HTTP daily",
             "platform": "amazon",
-            "objective": "Review the HTTP-selected Amazon evidence each day.",
+                "objective": "优化 Amazon listing title using HTTP-selected evidence each day.",
             "timezone_name": "UTC",
             "local_time": "00:00",
             "graph_version_id": graph["id"],

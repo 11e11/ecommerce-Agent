@@ -5049,6 +5049,7 @@ class Database:
         provider: str,
         graph_version_id: str,
         graph_version_hash: str,
+        skill_route: dict[str, Any] | None = None,
         metric_observation_ids: list[str] | None = None,
         origin: str = "manual",
         parent_daily_ops_run_id: str | None = None,
@@ -5122,6 +5123,14 @@ class Database:
                        ) VALUES(?,?,?,?,?,?,?,?)""",
                     (self._id(), tenant_id, run_id, None, "input_evidence", 0, serialized, now),
                 )
+                if skill_route is not None:
+                    conn.execute(
+                        """INSERT INTO agent_artifacts(
+                           id,tenant_id,run_id,task_id,kind,attempt,content_json,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?)""",
+                        (self._id(), tenant_id, run_id, None, "skill_route", 0,
+                         json.dumps(skill_route, ensure_ascii=False, sort_keys=True), now),
+                    )
                 conn.execute(
                     """INSERT INTO agent_events(
                        id,tenant_id,run_id,task_id,event_type,payload_json,created_at
@@ -5157,6 +5166,7 @@ class Database:
                 or existing.get("origin") != origin
                 or existing.get("parent_daily_ops_run_id") != parent_daily_ops_run_id
                 or existing.get("parent_daily_ops_attempt") != parent_daily_ops_attempt
+                or self.get_agent_route(tenant_id, existing["id"]) != skill_route
             ):
                 raise ConflictError("idempotency key was already used with a different agent run")
             return existing, True
@@ -5170,6 +5180,31 @@ class Database:
         if row is None:
             raise NotFoundError("agent run not found")
         return self._agent_run_dict(row)
+
+    def get_agent_route(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT content_json FROM agent_artifacts
+                   WHERE tenant_id=? AND run_id=? AND kind='skill_route'
+                   ORDER BY rowid DESC LIMIT 1""",
+                (tenant_id, run_id),
+            ).fetchone()
+        return json.loads(row["content_json"]) if row else None
+
+    def reset_agent_tasks_for_revision(
+        self, tenant_id: str, run_id: str, agent_names: list[str]
+    ) -> None:
+        """Keep prior artifacts, then make selected completed tasks runnable again."""
+        with self.transaction() as conn:
+            for name in agent_names:
+                updated = conn.execute(
+                    """UPDATE agent_tasks SET status='pending',error=NULL,
+                       started_at=NULL,completed_at=NULL
+                       WHERE tenant_id=? AND run_id=? AND agent_name=? AND status='completed'""",
+                    (tenant_id, run_id, name),
+                )
+                if updated.rowcount != 1:
+                    raise ConflictError(f"agent task {name} cannot be revised")
 
     def agent_run_downstream_eligible(self, tenant_id: str, run_id: str) -> bool:
         with self.connect() as conn:

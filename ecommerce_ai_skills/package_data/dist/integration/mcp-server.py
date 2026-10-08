@@ -154,13 +154,26 @@ class OPCServer:
         package installed keep working — the tool simply does not appear.
         Listing it never requires network access either: the retriever itself
         degrades to keyword-only when no embedding endpoint is configured.
+        When Milvus is reachable, recall + fusion run in-database (BM25
+        Function + dense + RRFRanker); if the connection probe fails, the
+        retriever keeps the in-process fallback path so the tool still works.
         """
         try:
             from ecommerce_ai_skills.runtime.retrieval import HybridRetriever
         except ImportError:
             return None
+        vector_store = None
         try:
-            return HybridRetriever(dist_path=self.dist)
+            from ecommerce_ai_skills.runtime.vector_store import MilvusVectorStore
+
+            store = MilvusVectorStore()
+            client = store.client()
+            if client.has_collection(store.configuration()[1]):
+                vector_store = store
+        except Exception:
+            vector_store = None
+        try:
+            return HybridRetriever(dist_path=self.dist, vector_store=vector_store)
         except Exception:
             return None
 
@@ -472,16 +485,20 @@ class OPCServer:
             )
         except Exception as exc:
             return f"hybrid_search failed: {type(exc).__name__}: {exc}"
-        if result["mode"] == "bm25":
+        backend = result.get("retrieval_backend")
+        if result["mode"] == "bm25" or backend is None:
             mode_note = (
                 "keyword-only (vector leg degraded: "
                 f"{result['vector_degraded_reason'] or 'not configured'})"
             )
+        elif backend == "milvus_hybrid":
+            mode_note = "bm25+vector fused in Milvus (RRFRanker)"
         else:
-            mode_note = "bm25+vector (RRF)"
+            mode_note = "bm25+vector (application-layer RRF)"
         return json.dumps({
             "query": result["query"],
             "retrieval_mode": result["retrieval_mode"],
+            "backend": backend,
             "mode": mode_note,
             "results": [
                 {

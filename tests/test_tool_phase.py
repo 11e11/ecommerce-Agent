@@ -91,6 +91,8 @@ class ResearchProvider:
         if agent_name == "operations_reviewer":
             return {
                 "verdict": "approved",
+                "revision_target": "none",
+                "revision_platform": "",
                 "issues": [],
                 "evidence_refs": [s["source_id"] for s in payload["evidence_catalog"]],
                 "limitations": payload["manager_report"].get("limitations", []),
@@ -150,7 +152,7 @@ def _application(tmp_path: Path, provider) -> tuple[RuntimeApplication, object]:
     return app, principal
 
 
-def test_tool_enabled_analyst_runs_research_and_persists_notes(tmp_path: Path) -> None:
+def test_tool_enabled_roles_run_research_and_persist_notes(tmp_path: Path) -> None:
     provider = ResearchProvider()
     client = FakeKnowledgeClient()
     app, principal = _application(tmp_path, provider)
@@ -158,34 +160,39 @@ def test_tool_enabled_analyst_runs_research_and_persists_notes(tmp_path: Path) -
 
     run = app.agent_runs.request(
         principal, "weekly_ops",
-        "Find the most important evidence-backed actions for this week.",
+        "优化 Amazon listing title using this week's evidence.",
         _weekly_evidence(), "tool-run", "tool-request",
     )
     bundle = app.agent_runs.execute(principal, run["id"], "tool-execute")
 
     assert bundle["run"]["status"] == "completed"
     assert bundle["run"]["review_status"] == "approved"
-    # The research phase ran exactly for the tool-enabled role, with the
-    # graph-declared whitelist as the offered tool set.
-    assert provider.research_calls == [(
-        "evidence_analyst",
-        ["opc.search_knowledge", "opc.get_constraints", "opc.read_chapter"],
-    )]
+    assert {name for name, _ in provider.research_calls} == {
+        "evidence_analyst", "platform_amazon_operator",
+        "platform_shopify_operator", "cross_platform_controller",
+    }
+    assert all(tools == ["opc.search_knowledge", "opc.get_constraints", "opc.read_chapter"]
+               for _, tools in provider.research_calls)
     analyst_payload = next(
         payload for name, payload in provider.calls if name == "evidence_analyst"
     )
     assert analyst_payload["research_notes"][0]["result"] == "knowledge-result-for-opc.search_knowledge"
-    # Strict roles never see a research phase or notes.
     specialist_payload = next(
         payload for name, payload in provider.calls if name == "platform_amazon_operator"
     )
-    assert "research_notes" not in specialist_payload
+    assert specialist_payload["research_notes"]
+    cross_payload = next(
+        payload for name, payload in provider.calls if name == "cross_platform_controller"
+    )
+    assert cross_payload["research_notes"]
     # Every invocation is audited as a bounded task event.
     events = app.db.list_agent_events(principal.tenant_id, run["id"])
     tool_events = [event for event in events if event["event_type"] == "task.tool_call"]
-    assert len(tool_events) == 1
-    assert tool_events[0]["payload"]["tool"] == "opc.search_knowledge"
-    assert tool_events[0]["payload"]["agent_name"] == "evidence_analyst"
+    assert len(tool_events) == 4
+    assert {event["payload"]["agent_name"] for event in tool_events} == {
+        "evidence_analyst", "platform_amazon_operator",
+        "platform_shopify_operator", "cross_platform_controller",
+    }
 
 
 def test_whitelist_refusal_is_audited_and_does_not_fail_the_run(tmp_path: Path) -> None:
@@ -196,7 +203,7 @@ def test_whitelist_refusal_is_audited_and_does_not_fail_the_run(tmp_path: Path) 
 
     run = app.agent_runs.request(
         principal, "weekly_ops",
-        "Find the most important evidence-backed actions for this week.",
+        "优化 Amazon listing title using this week's evidence.",
         _weekly_evidence(), "refuse-run", "refuse-request",
     )
     bundle = app.agent_runs.execute(principal, run["id"], "refuse-execute")
@@ -211,6 +218,31 @@ def test_whitelist_refusal_is_audited_and_does_not_fail_the_run(tmp_path: Path) 
     assert analyst_payload["research_notes"][0]["result"].startswith("ERROR:")
 
 
+def test_executor_enforces_call_budget_even_if_provider_overcalls(tmp_path: Path) -> None:
+    class OvercallingProvider(ResearchProvider):
+        def research(self, *, agent_name, research_brief, tools, tool_executor, max_tool_calls, safety_identifier):
+            if agent_name != "evidence_analyst":
+                return []
+            return [
+                {"tool": tools[0]["name"], "result": tool_executor(tools[0]["name"], {"query": "listing"})}
+                for _ in range(max_tool_calls + 1)
+            ]
+
+    app, principal = _application(tmp_path, OvercallingProvider())
+    client = FakeKnowledgeClient()
+    app.agent_runs.knowledge_client = client
+    run = app.agent_runs.request(
+        principal, "weekly_ops", "优化 Amazon listing title",
+        _weekly_evidence(), "budget-run", "budget-request",
+    )
+    app.agent_runs.execute(principal, run["id"], "budget-execute")
+    assert len(client.calls) == 6
+    events = app.db.list_agent_events(principal.tenant_id, run["id"])
+    refused = [event for event in events if event["event_type"] == "task.tool_call"
+               and event["payload"].get("reason") == "tool_budget_exhausted"]
+    assert len(refused) == 1
+
+
 def test_research_results_are_truncated_before_reaching_a_prompt(tmp_path: Path) -> None:
     provider = ResearchProvider()
     app, principal = _application(tmp_path, provider)
@@ -218,7 +250,7 @@ def test_research_results_are_truncated_before_reaching_a_prompt(tmp_path: Path)
 
     run = app.agent_runs.request(
         principal, "weekly_ops",
-        "Find the most important evidence-backed actions for this week.",
+        "优化 Amazon listing title using this week's evidence.",
         _weekly_evidence(), "truncate-run", "truncate-request",
     )
     bundle = app.agent_runs.execute(principal, run["id"], "truncate-execute")
@@ -244,7 +276,7 @@ def test_provider_without_research_capability_degrades_to_single_shot(tmp_path: 
 
     run = app.agent_runs.request(
         principal, "weekly_ops",
-        "Find the most important evidence-backed actions for this week.",
+        "优化 Amazon listing title using this week's evidence.",
         _weekly_evidence(), "degrade-run", "degrade-request",
     )
     bundle = app.agent_runs.execute(principal, run["id"], "degrade-execute")

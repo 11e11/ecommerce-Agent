@@ -115,7 +115,10 @@ def default_graph_definition() -> dict[str, Any]:
                 "optional": False,
                 "skill_ids": [],
                 "instruction_key": KNOWN_INSTRUCTION_KEYS["platform_specialist"],
-                "tool_policy": dict(STRICT_TOOL_POLICY),
+                "tool_policy": {
+                    "allowed_tools": ["opc.get_constraints", "opc.read_chapter", "opc.search_knowledge"],
+                    "max_tool_calls": 6,
+                },
             },
             {
                 "key": "cross_controller",
@@ -124,7 +127,10 @@ def default_graph_definition() -> dict[str, Any]:
                 "optional": True,
                 "skill_ids": ["ecom-applicability", "ecom-listing"],
                 "instruction_key": KNOWN_INSTRUCTION_KEYS["cross_controller"],
-                "tool_policy": dict(STRICT_TOOL_POLICY),
+                "tool_policy": {
+                    "allowed_tools": ["opc.get_constraints", "opc.read_chapter", "opc.search_knowledge"],
+                    "max_tool_calls": 6,
+                },
             },
             {
                 "key": "manager",
@@ -178,6 +184,7 @@ class AgentGraphService:
             Path(__file__).resolve(),
             Path(__file__).resolve().with_name("agents.py"),
             Path(__file__).resolve().with_name("graph_engine.py"),
+            Path(__file__).resolve().with_name("skill_router.py"),
             dist_root / "ontology.json",
             *sorted((dist_root / "skills").glob("*/manifest.yaml")),
         ]

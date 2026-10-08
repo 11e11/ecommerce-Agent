@@ -36,6 +36,8 @@ class DemoSeedProvider:
         if agent_name == "operations_reviewer":
             return {
                 "verdict": "approved",
+                "revision_target": "none",
+                "revision_platform": "",
                 "issues": [],
                 "evidence_refs": [
                     source["source_id"] for source in payload["evidence_catalog"]
@@ -351,7 +353,7 @@ def seed_demo_database(path: str | Path) -> dict[str, Any]:
         owner,
         name="Demo Amazon daily pulse",
         platform="amazon",
-        objective="Review the newest Demo Amazon business evidence for this local business day.",
+        objective="优化 Amazon listing title using Demo business evidence for this local business day.",
         timezone_name="Asia/Shanghai",
         local_time=(today + timedelta(minutes=36)).strftime("%H:%M"),
         graph_version_id=str(graph_version["id"]),
@@ -438,7 +440,7 @@ def seed_demo_database(path: str | Path) -> dict[str, Any]:
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Review Demo profitability, ad efficiency, inventory, and cross-platform pricing.",
+        "优化 Amazon listing title using Demo marketplace evidence.",
         [],
         "demo-weekly-ops",
         "demo-weekly-ops-request",
@@ -469,7 +471,7 @@ def seed_demo_database(path: str | Path) -> dict[str, Any]:
     schedule = app.schedules.create(
         owner,
         name="Demo Amazon weekly review",
-        objective="Review the newest Demo Amazon business evidence.",
+        objective="优化 Amazon listing title using Demo business evidence.",
         evidence_import_ids=[],
         evidence_selectors=[
             {"platform": "amazon", "report_type": "amazon_business_report"}

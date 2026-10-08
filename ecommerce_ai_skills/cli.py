@@ -448,7 +448,7 @@ def main() -> int:
     rag_search.add_argument("--llm", action="store_true", help="enable LLM steps (rewrite/rerank/grade)")
     rag_search.add_argument(
         "--vector-backend", choices=["file", "milvus"], default="file",
-        help="dense-leg storage: local cache file (exact) or Milvus",
+        help="recall+fusion backend: Milvus (in-DB BM25+dense, RRFRanker) or local file fallback (in-process BM25+cosine)",
     )
     rag_eval = sub.add_parser(
         "rag-eval",

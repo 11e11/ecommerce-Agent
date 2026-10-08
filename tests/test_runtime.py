@@ -359,6 +359,8 @@ class _FixtureAgentProvider:
         if agent_name == "operations_reviewer":
             return {
                 "verdict": "approved",
+                "revision_target": "none",
+                "revision_platform": "",
                 "issues": [],
                 "evidence_refs": [
                     source["source_id"] for source in payload["evidence_catalog"]
@@ -449,7 +451,7 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Find the most important evidence-backed actions for this week.",
+        "优化 Amazon listing title with this week's evidence.",
         evidence,
         "weekly-2026-w34",
         "request-1",
@@ -493,7 +495,8 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
         call[1] for call in provider.calls if call[0] == "platform_amazon_operator"
     )
     amazon_skills = {contract["name"] for contract in amazon_payload["skill_contracts"]}
-    assert {"ecom-listing", "ecom-advertising", "ecom-inventory", "ecom-compliance"} <= amazon_skills
+    assert amazon_skills == {"ecom-listing"}
+    assert next(a for a in bundle["artifacts"] if a["kind"] == "skill_route")["content"]["skills"] == ["ecom-listing"]
     assert amazon_payload["target_platform"] == "amazon"
     assert {source["platform"] for source in amazon_payload["evidence"]} == {"amazon"}
     shopify_payload = next(
@@ -505,7 +508,7 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
     replay = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Find the most important evidence-backed actions for this week.",
+        "优化 Amazon listing title with this week's evidence.",
         evidence,
         "weekly-2026-w34",
         "request-3",
@@ -513,7 +516,7 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
     assert replay["id"] == run["id"]
     with pytest.raises(ConflictError, match="different agent run"):
         app.agent_runs.request(
-            principal, "weekly_ops", "Use a different objective now.", evidence,
+            principal, "weekly_ops", "优化 Amazon listing title with a different objective.", evidence,
             "weekly-2026-w34", "request-4"
         )
 
@@ -535,7 +538,7 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
         )
 
 
-def test_amazon_only_run_gets_full_amazon_skill_team_without_cross_platform_task(tmp_path: Path) -> None:
+def test_amazon_only_run_gets_routed_skill_without_cross_platform_task(tmp_path: Path) -> None:
     from ecommerce_ai_skills.runtime.api import RuntimeApplication
 
     provider = _FixtureAgentProvider()
@@ -546,7 +549,7 @@ def test_amazon_only_run_gets_full_amazon_skill_team_without_cross_platform_task
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Review the Amazon account with only supplied exports.",
+        "优化 Amazon listing title using only supplied exports.",
         amazon_evidence,
         "amazon-weekly-1",
         "request-1",
@@ -559,16 +562,7 @@ def test_amazon_only_run_gets_full_amazon_skill_team_without_cross_platform_task
     amazon_payload = next(
         call[1] for call in provider.calls if call[0] == "platform_amazon_operator"
     )
-    assert {contract["name"] for contract in amazon_payload["skill_contracts"]} == {
-        "ecom-advertising",
-        "ecom-applicability",
-        "ecom-compliance",
-        "ecom-customer-service",
-        "ecom-inventory",
-        "ecom-listing",
-        "ecom-pricing",
-        "ecom-research",
-    }
+    assert {contract["name"] for contract in amazon_payload["skill_contracts"]} == {"ecom-listing"}
 
 
 def test_platform_registry_drives_supported_marketplaces_and_rejects_unknown_platform(tmp_path: Path) -> None:
@@ -681,7 +675,7 @@ def test_amazon_csv_import_persists_real_rows_and_drives_agent_run(tmp_path: Pat
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Review this imported Amazon Business Report.",
+        "优化 Amazon listing title using this imported Business Report.",
         None,
         "amazon-import-run",
         "request-4",
@@ -814,7 +808,7 @@ def test_schema_v3_agent_runs_migrate_platforms_and_remain_executable(tmp_path: 
     bootstrap = app.bootstrap("A", "owner@example.com")
     principal = app.auth.authenticate(bootstrap["api_key"])
     run = app.agent_runs.request(
-        principal, "weekly_ops", "Prepare a migration-safe weekly review.",
+        principal, "weekly_ops", "优化 Amazon listing title in a migration-safe review.",
         _weekly_evidence(), "legacy-v3-run", "request-1"
     )
     legacy_evidence = []
@@ -847,7 +841,7 @@ def test_weekly_ops_failure_is_persisted_and_explicitly_retryable(tmp_path: Path
     bootstrap = app.bootstrap("A", "owner@example.com")
     principal = app.auth.authenticate(bootstrap["api_key"])
     run = app.agent_runs.request(
-        principal, "weekly_ops", "Review this week's evidence safely.",
+        principal, "weekly_ops", "优化 Amazon listing title using this week's evidence safely.",
         _weekly_evidence(), "retryable-run", "request-1"
     )
     with pytest.raises(ExternalServiceError, match="unknown evidence"):
@@ -881,7 +875,7 @@ def test_marketplace_agent_cannot_cite_another_platforms_evidence(tmp_path: Path
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Keep Amazon and Shopify evidence isolated.",
+        "优化 Amazon listing title and keep Amazon and Shopify evidence isolated.",
         _weekly_evidence(),
         "platform-isolation-run",
         "request-1",
@@ -902,7 +896,7 @@ def test_workflow_evaluator_persists_policy_regression(tmp_path: Path) -> None:
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Evaluate approval-policy regressions.",
+        "优化 Amazon listing title and evaluate approval-policy regressions.",
         _weekly_evidence(),
         "evaluation-run",
         "request-1",
@@ -1031,7 +1025,7 @@ def test_http_agent_run_endpoints_use_tenant_runtime(tmp_path: Path) -> None:
         "/v1/agent-runs",
         {
             "workflow": "weekly_ops",
-            "objective": "Find this week's evidence-backed priorities.",
+            "objective": "优化 Amazon listing title using this week's evidence.",
             "evidence": _weekly_evidence(),
         },
         {"Idempotency-Key": "http-weekly-1"},
@@ -1147,7 +1141,7 @@ def test_http_csv_import_and_agent_run_reference(tmp_path: Path) -> None:
         "/v1/agent-runs",
         body={
             "workflow": "weekly_ops",
-            "objective": "Review the uploaded Amazon evidence.",
+            "objective": "优化 Amazon listing title using uploaded evidence.",
             "evidence_import_ids": [import_id],
         },
         extra_headers={"Idempotency-Key": "http-import-run"},
@@ -1167,7 +1161,7 @@ def test_durable_job_worker_executes_and_explicitly_retries_agent_run(tmp_path: 
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Execute this run through the durable worker.",
+        "优化 Amazon listing title through the durable worker.",
         _weekly_evidence(),
         "worker-run",
         "request-1",
@@ -1219,7 +1213,7 @@ def test_scheduler_materializes_weekly_run_and_job_then_advances(tmp_path: Path)
     schedule = app.schedules.create(
         principal,
         name="Amazon weekly review",
-        objective="Review the latest imported Amazon evidence every week.",
+        objective="优化 Amazon listing title.",
         evidence_import_ids=[],
         evidence_selectors=[
             {"platform": "amazon", "report_type": "amazon_business_report"}
@@ -1572,4 +1566,3 @@ def test_openai_commentary_phase_is_not_parsed_as_the_answer() -> None:
         ],
     })
     assert _complete(provider) == structured
-

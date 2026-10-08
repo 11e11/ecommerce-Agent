@@ -12,11 +12,21 @@ after RUC-NLPIR/FlashRAG and vibrantlabsai/ragas):
           -> corrective second pass when evidence is thin
           -> post-generation faithfulness check
 
+The "BM25 + dense -> RRF" stage runs in one of two interchangeable
+backends (see vector_store.py):
+
+- Milvus (production path): a BM25 Function over an analyzer-enabled text
+  field is the keyword leg, the stored bge-m3 embeddings are the dense leg,
+  and RRFRanker fuses them inside one ``hybrid_search`` call.
+- In-process fallback: a small Okapi BM25 (CJK bigram tokenizer) plus
+  brute-force cosine over the content-hash embedding cache, fused by the
+  same RRF here. Same contract, so the 55-case eval referees any switch.
+
 Design constraints inherited from the runtime:
 
-- stdlib only. HTTP goes through an injectable ``transport`` callable the
-  same way the agent providers do, so no SDK, no httpx, and tests can deny
-  the network entirely.
+- The fallback path is stdlib only. HTTP goes through an injectable
+  ``transport`` callable the same way the agent providers do, so no SDK,
+  no httpx, and tests can deny the network entirely.
 - Every LLM step is optional and fails soft: a provider error (missing
   credential, no balance, HTTP failure) degrades that one step to a warning
   and the chain still returns fused retrieval results.
@@ -643,11 +653,12 @@ class HybridRetriever:
     environ: Mapping[str, str] | None = None
     transport: Callable[..., Any] = urlopen
     llm: Any | None = None
-    # Optional Milvus backend for the dense leg (see vector_store.py). When
-    # set, vector recall goes to Milvus; when None, the original in-process
-    # brute-force cosine over the content-hash cache file is used. Both must
-    # return the same ranking for the same query — the 55-case eval is the
-    # referee.
+    # Optional Milvus backend for recall + fusion (see vector_store.py). When
+    # set and the collection carries the BM25 sparse field, both legs run and
+    # fuse inside Milvus (hybrid_search + RRFRanker); when None, the original
+    # in-process BM25 + brute-force cosine fused by the same RRF here is
+    # used. Both must produce comparable rankings for the same query — the
+    # 55-case eval is the referee.
     vector_store: Any | None = None
     timeout_seconds: int = 120
 
@@ -660,6 +671,11 @@ class HybridRetriever:
         self._vectors_ready = False
         self._vector_degraded_reason: str | None = None
         self._milvus_client: Any | None = None
+        self._milvus_hybrid: bool | None = None
+        # Which backend produced the last fused ranking: "milvus_hybrid"
+        # (in-DB BM25 + dense + RRFRanker), "application_rrf" (in-process
+        # BM25 + dense fused here), or None (keyword-only fallback).
+        self.retrieval_backend: str | None = None
 
     # -- corpus --
 
@@ -681,8 +697,10 @@ class HybridRetriever:
             "chunk_count": len(chunks),
             "chapter_count": len(chapters),
             "vector_backend": (
-                "embedding_api" if self._vectors_ready else "disabled"
+                "milvus_hybrid" if self.retrieval_backend == "milvus_hybrid"
+                else "embedding_api" if self._vectors_ready else "disabled"
             ),
+            "retrieval_backend": self.retrieval_backend,
         }
 
     # -- index --
@@ -880,35 +898,101 @@ class HybridRetriever:
             "alternate_query": alternate_query,
             "mode": mode,
             "retrieval_mode": retrieval_mode,
+            "retrieval_backend": self.retrieval_backend,
             "warnings": warnings,
             "vector_degraded_reason": self._vector_degraded_reason,
             "results": results,
         }
 
+    def _milvus_hybrid_ranking(
+        self, query: str, candidate_k: int, warnings: list[str]
+    ) -> list[str] | None:
+        """One in-database fused ranking (BM25 + dense + RRFRanker), or None
+        to fall back to the in-process path.
+
+        Probes the collection's capabilities on first use. Returns None (and
+        appends a warning) when the schema predates hybrid search, the query
+        could not be embedded, or the search itself failed — callers keep
+        their keyword leg alive in every one of those cases.
+        """
+        try:
+            if self._milvus_client is None:
+                self._milvus_client = self.vector_store.client()
+            if self._milvus_hybrid is None:
+                self._milvus_hybrid = self.vector_store.supports_hybrid(
+                    self._milvus_client
+                )
+        except Exception as exc:
+            self._milvus_hybrid = None
+            self._milvus_client = None
+            warnings.append(f"milvus_connection_failed: {type(exc).__name__}: {exc}")
+            log.warning("Milvus connection failed: %s", exc)
+            return None
+        if not self._milvus_hybrid:
+            return None
+        query_vector = self._query_vector(query)
+        if query_vector is None:
+            warnings.append("query_embedding_failed")
+            return None
+        try:
+            hits = self.vector_store.hybrid_search(
+                self._milvus_client, query, query_vector, candidate_k
+            )
+        except Exception as exc:  # fail soft: keyword leg must survive
+            warnings.append(
+                f"milvus_hybrid_search_failed: {type(exc).__name__}: {exc}"
+            )
+            log.warning("Milvus hybrid search failed: %s", exc)
+            self._milvus_client = None
+            return None
+        return [chunk_id for chunk_id, _score in hits]
+
     def _fused_ranking(
         self, query: str, *, candidate_k: int, use_vectors: bool
     ) -> tuple[list[list[str]], list[str]]:
         warnings: list[str] = []
-        bm25_hits = self._ensure_bm25().search(query, top_n=candidate_k)
-        rankings = [[chunk_id for chunk_id, _score in bm25_hits]]
+        bm25_ranking = [
+            chunk_id for chunk_id, _score
+            in self._ensure_bm25().search(query, top_n=candidate_k)
+        ]
         if use_vectors and self.vector_store is not None:
+            hybrid_ranking = self._milvus_hybrid_ranking(
+                query, candidate_k, warnings
+            )
+            if hybrid_ranking is not None:
+                self.retrieval_backend = "milvus_hybrid"
+                return [hybrid_ranking], warnings
+            if self._milvus_hybrid:
+                # The schema supports in-DB hybrid but this query fell short
+                # (no query embedding, search error): the dense leg against
+                # the same backend would fail the same way, so the keyword
+                # leg's in-process result is the whole answer this round.
+                self.retrieval_backend = None
+                return [bm25_ranking], warnings
+            # Legacy schema (no BM25 sparse field): dense-only Milvus leg,
+            # fused with the in-process BM25 ranking below.
             query_vector = self._query_vector(query)
-            if query_vector is None:
-                warnings.append("query_embedding_failed")
-            else:
+            if query_vector is not None:
                 try:
                     if self._milvus_client is None:
                         self._milvus_client = self.vector_store.client()
-                    hits = self.vector_store.search(
+                    dense_hits = self.vector_store.search(
                         self._milvus_client, query_vector, candidate_k
                     )
                 except Exception as exc:  # fail soft: keyword leg must survive
-                    warnings.append(f"vector_store_search_failed: {type(exc).__name__}: {exc}")
+                    warnings.append(
+                        f"vector_store_search_failed: {type(exc).__name__}: {exc}"
+                    )
                     log.warning("Milvus search failed: %s", exc)
                     self._milvus_client = None
-                else:
-                    rankings.append([chunk_id for chunk_id, _score in hits])
-        elif use_vectors and self._ensure_vectors():
+                    dense_hits = []
+                if dense_hits:
+                    self.retrieval_backend = "application_rrf"
+                    return [bm25_ranking, [cid for cid, _s in dense_hits]], warnings
+            self.retrieval_backend = None
+            return [bm25_ranking], warnings
+        rankings = [bm25_ranking]
+        if use_vectors and self._ensure_vectors():
             query_vector = self._query_vector(query)
             if query_vector is not None:
                 scored = []
@@ -923,12 +1007,17 @@ class HybridRetriever:
                 rankings.append(
                     [chunk_id for chunk_id, _score in scored[:candidate_k]]
                 )
+                self.retrieval_backend = "application_rrf"
             else:
                 warnings.append("query_embedding_failed")
+                self.retrieval_backend = None
         elif use_vectors:
             warnings.append(
                 f"vector_search_degraded: {self._vector_degraded_reason}"
             )
+            self.retrieval_backend = None
+        else:
+            self.retrieval_backend = None
         return rankings, warnings
 
     def _neighbor_chunks(self, seed_ids: list[tuple[str, float]]) -> list[str]:

@@ -243,7 +243,7 @@ Each entry:
 from the index is usually still present in the body. Grep `chapters/` before
 concluding anything is missing.
 """.format(len(knowledge_index))
-    (dist / "knowledge" / "query_guide.md").write_text(query_guide, newline="\n")
+    (dist / "knowledge" / "query_guide.md").write_text(query_guide, encoding="utf-8", newline="\n")
 
     # 5. references/
     for ref_name in ["glossary.md", "boundaries.md"]:
@@ -368,7 +368,7 @@ Only after all three come up empty should you say the package lacks that content
 
 See `integration/` for framework-specific setup guides.
 """
-    (dist / "SKILL.md").write_text(root_skill, newline="\n")
+    (dist / "SKILL.md").write_text(root_skill, encoding="utf-8", newline="\n")
 
     # 6. README.md — human quickstart
     readme = f"""# OPC E-Commerce AI Infrastructure
@@ -450,7 +450,7 @@ See `integration/mcp.md` for MCP server setup.
 See each skill's manifest (skills/<skill>/manifest.yaml) for input/output schemas.
 See `knowledge/query_guide.md` for retrieval patterns.
 """
-    (dist / "README.md").write_text(readme, newline="\n")
+    (dist / "README.md").write_text(readme, encoding="utf-8", newline="\n")
 
     # 7. INTEGRATION.md — framework guide index
     integration_md = """# Integration Guides
@@ -476,7 +476,7 @@ This package is framework-agnostic. Choose your integration path:
 2. Add a system-prompt file with the adapted system prompt
 3. Document any framework-specific routing or tool call format differences
 """
-    (dist / "INTEGRATION.md").write_text(integration_md, newline="\n")
+    (dist / "INTEGRATION.md").write_text(integration_md, encoding="utf-8", newline="\n")
 
     # 7b. Runtime contract and operational controls.  These are shipped with
     # the installable artifact so an operator can audit the API/security

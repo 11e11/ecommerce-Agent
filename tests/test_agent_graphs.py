@@ -101,6 +101,8 @@ class GraphProvider:
                 ]
             return {
                 "verdict": self.verdict,
+                "revision_target": "manager" if self.verdict == "revision_required" else "none",
+                "revision_platform": "",
                 "issues": issues,
                 "evidence_refs": refs,
                 "limitations": [
@@ -160,12 +162,10 @@ def test_schema_v16_graph_persistence_rbac_tenant_and_immutable_publish(tmp_path
         ],
         "max_tool_calls": 6,
     }
-    assert all(
-        node_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
-        for role in (
-            "platform_specialist", "cross_controller", "manager", "reviewer",
-        )
-    )
+    assert all(node_policies[role]["max_tool_calls"] == 6
+               for role in ("platform_specialist", "cross_controller"))
+    assert all(node_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
+               for role in ("manager", "reviewer"))
     with pytest.raises(AuthorizationError):
         app.agent_graphs.create(viewer, "Viewer graph", default_graph_definition(), "viewer-create")
 
@@ -206,7 +206,7 @@ def test_agent_child_rows_reject_cross_tenant_direct_writes(tmp_path: Path) -> N
     owner = app.auth.authenticate(first["api_key"])
     outsider = app.auth.authenticate(second["api_key"])
     graph = app.agent_graphs.ensure_default(owner)
-    run = app.agent_runs.request(owner, "weekly_ops", "Cross tenant FK", evidence("amazon"), "fk", "fk", graph_version_id=graph["id"])
+    run = app.agent_runs.request(owner, "weekly_ops", "优化 Amazon listing title; Cross tenant FK", evidence("amazon"), "fk", "fk", graph_version_id=graph["id"])
     with app.db.connect() as conn, pytest.raises(sqlite3.IntegrityError, match="tenant ownership"):
         conn.execute(
             "UPDATE agent_runs SET requested_by=? WHERE id=?",
@@ -457,7 +457,7 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Review three marketplaces with the published domain graph.",
+        "优化 Amazon listing title across three marketplaces.",
         sources,
         "graph-run",
         "graph-run-request",
@@ -466,7 +466,7 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
     replay = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Review three marketplaces with the published domain graph.",
+        "优化 Amazon listing title across three marketplaces.",
         sources,
         "graph-run",
         "graph-run-replay",
@@ -486,7 +486,7 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
         app.agent_runs.request(
             owner,
             "weekly_ops",
-            "Review three marketplaces with the published domain graph.",
+            "优化 Amazon listing title across three marketplaces.",
             sources,
             "graph-run",
             "graph-run-conflict",
@@ -517,12 +517,10 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
     assert set(task_policies["evidence_analyst"]["allowed_tools"]) == {
         "opc.search_knowledge", "opc.get_constraints", "opc.read_chapter",
     }
-    assert all(
-        task_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
-        for role in (
-            "platform_specialist", "cross_controller", "manager", "reviewer",
-        )
-    )
+    assert all(task_policies[role]["max_tool_calls"] == 6
+               for role in ("platform_specialist", "cross_controller"))
+    assert all(task_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
+               for role in ("manager", "reviewer"))
     call_names = [name for name, _ in provider.calls]
     assert call_names[-1] == "operations_reviewer"
     cross_index = call_names.index("cross_platform_controller")
@@ -558,6 +556,81 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
     )["passed"] is True
 
 
+def test_router_selects_multiple_skills_per_supported_platform_and_blocks_unknown(tmp_path: Path) -> None:
+    app = RuntimeApplication(Database(tmp_path / "runtime.sqlite"), agent_provider=GraphProvider())
+    owner = app.auth.authenticate(app.bootstrap("A", "owner@example.com")["api_key"])
+    run = app.agent_runs.request(
+        owner, "weekly_ops", "优化 Amazon listing title 和 PPC 广告预算",
+        evidence("amazon", "shopify"), "multi-route", "multi-route-request",
+    )
+    route = app.db.get_agent_route(owner.tenant_id, run["id"])
+    assert route["skills"] == ["ecom-advertising", "ecom-listing"]
+    assert route["by_platform"]["amazon"] == ["ecom-advertising", "ecom-listing"]
+    assert route["by_platform"]["shopify"] == ["ecom-listing"]
+    bundle = app.agent_runs.execute(owner, run["id"], "multi-route-execute")
+    skills = {task["agent_name"]: task["skill_ids"] for task in bundle["tasks"]}
+    assert skills["platform_amazon_operator"] == route["by_platform"]["amazon"]
+    assert skills["platform_shopify_operator"] == route["by_platform"]["shopify"]
+    assert app.db.get_agent_route(owner.tenant_id, run["id"]) == route
+    with pytest.raises(ValidationError, match="Skill Router"):
+        app.agent_runs.request(
+            owner, "weekly_ops", "Unrelated internal placeholder task",
+            evidence("amazon"), "unmatched-route", "unmatched-route-request",
+        )
+    with pytest.raises(ValidationError, match="insufficient constraint coverage"):
+        app.agent_runs.request(
+            owner, "weekly_ops", "Amazon video-ad caption rules",
+            evidence("amazon"), "low-coverage-route", "low-coverage-request",
+        )
+
+
+@pytest.mark.parametrize("target", ["platform_specialist", "cross_controller", "manager"])
+def test_reviewer_directed_revision_replays_only_affected_nodes(tmp_path: Path, target: str) -> None:
+    class RevisionProvider(GraphProvider):
+        def __init__(self):
+            super().__init__()
+            self.reviews = 0
+
+        def complete(self, *, agent_name, instructions, payload, output_schema, safety_identifier):
+            if agent_name == "operations_reviewer":
+                self.verdict = "revision_required" if self.reviews == 0 else "approved"
+                result = super().complete(
+                    agent_name=agent_name, instructions=instructions, payload=payload,
+                    output_schema=output_schema, safety_identifier=safety_identifier,
+                )
+                self.reviews += 1
+                result["revision_target"] = target if self.verdict == "revision_required" else "none"
+                result["revision_platform"] = "amazon" if target == "platform_specialist" and self.verdict == "revision_required" else ""
+                return result
+            return super().complete(
+                agent_name=agent_name, instructions=instructions, payload=payload,
+                output_schema=output_schema, safety_identifier=safety_identifier,
+            )
+
+    provider = RevisionProvider()
+    app = RuntimeApplication(Database(tmp_path / "runtime.sqlite"), agent_provider=provider)
+    owner = app.auth.authenticate(app.bootstrap("A", "owner@example.com")["api_key"])
+    run = app.agent_runs.request(
+        owner, "weekly_ops", "优化 Amazon listing title",
+        evidence("amazon", "shopify"), f"revise-{target}", f"revise-{target}-request",
+    )
+    bundle = app.agent_runs.execute(owner, run["id"], f"revise-{target}-execute")
+    assert bundle["run"]["review_status"] == "approved"
+    attempts = {task["agent_name"]: task["attempt_count"] for task in bundle["tasks"]}
+    assert attempts["operations_reviewer"] == attempts["store_manager"] == 2
+    assert attempts["platform_shopify_operator"] == 1
+    assert attempts["platform_amazon_operator"] == (2 if target == "platform_specialist" else 1)
+    assert attempts["cross_platform_controller"] == (1 if target == "manager" else 2)
+    revised_target = {
+        "platform_specialist": "platform_amazon_operator",
+        "cross_controller": "cross_platform_controller",
+        "manager": "store_manager",
+    }[target]
+    revised_payloads = [payload for name, payload in provider.calls if name == revised_target]
+    assert "revision_feedback" in revised_payloads[-1]
+    assert app.evaluator.evaluate(owner, run["id"], f"revise-{target}-eval")["passed"] is True
+
+
 def test_run_fails_closed_when_installed_execution_contract_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -567,7 +640,7 @@ def test_run_fails_closed_when_installed_execution_contract_changes(
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Bind this run to the currently installed execution contract.",
+        "优化 Amazon listing title under the installed execution contract.",
         evidence("amazon"),
         "execution-contract-run",
         "execution-contract-request",
@@ -621,7 +694,7 @@ def test_metric_observations_are_tenant_safe_bounded_and_currency_isolated(tmp_p
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Review normalized Amazon metrics without cross-currency aggregation.",
+        "优化 Amazon listing title using normalized metrics without cross-currency aggregation.",
         None,
         "metric-run",
         "metric-request",
@@ -696,12 +769,13 @@ def test_reviewer_revision_and_failure_are_persisted_and_not_consumed(tmp_path: 
     )
     owner = app.auth.authenticate(app.bootstrap("A", "owner@example.com")["api_key"])
     run = app.agent_runs.request(
-        owner, "weekly_ops", "Review this Amazon source independently.",
+        owner, "weekly_ops", "优化 Amazon listing title and review this source independently.",
         evidence("amazon"), "revision-run", "revision-request",
     )
     bundle = app.agent_runs.execute(owner, run["id"], "revision-execute")
     assert bundle["run"]["status"] == "completed"
     assert bundle["run"]["review_status"] == "revision_required"
+    assert next(task for task in bundle["tasks"] if task["role"] == "reviewer")["attempt_count"] == 2
     assert app.briefing.get(owner, "amazon")["priorities"] == []
     evaluation = app.evaluator.evaluate(owner, run["id"], "revision-eval")
     assert evaluation["passed"] is False
@@ -714,7 +788,7 @@ def test_reviewer_revision_and_failure_are_persisted_and_not_consumed(tmp_path: 
         failing.bootstrap("A", "owner@example.com")["api_key"]
     )
     failed_run = failing.agent_runs.request(
-        failing_owner, "weekly_ops", "Reject an invalid reviewer citation.",
+        failing_owner, "weekly_ops", "优化 Amazon listing title and reject an invalid citation.",
         evidence("amazon"), "failed-review", "failed-review-request",
     )
     with pytest.raises(ExternalServiceError, match="reviewer cited unknown evidence"):
@@ -729,6 +803,8 @@ def test_reviewer_revision_and_failure_are_persisted_and_not_consumed(tmp_path: 
         WeeklyOpsCouncil._validate_reviewer(
             {
                 "verdict": "rejected",
+                "revision_target": "none",
+                "revision_platform": "",
                 "issues": [],
                 "evidence_refs": ["amazon-source"],
                 "limitations": ["The report is not safe to consume."],
@@ -746,7 +822,7 @@ def test_retry_consumes_only_final_reviewer_attempt(
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Retry safely after the Reviewer completed but run finalization failed.",
+        "优化 Amazon listing title; retry after Reviewer finalization failed.",
         evidence("amazon"),
         "reviewer-retry",
         "reviewer-retry-request",
@@ -786,7 +862,7 @@ def test_retry_before_reviewer_uses_reviewer_task_attempt(
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Retry after Manager fails before the Reviewer starts.",
+        "优化 Amazon listing title; retry after Manager fails.",
         evidence("amazon"),
         "pre-reviewer-retry",
         "pre-reviewer-retry-request",
@@ -853,6 +929,8 @@ def test_manager_and_reviewer_deterministic_safety_controls() -> None:
 
     approved = {
         "verdict": "approved",
+        "revision_target": "none",
+        "revision_platform": "",
         "issues": [],
         "evidence_refs": ["source-a"],
         "limitations": ["Keep this limitation verbatim."],
@@ -917,6 +995,8 @@ def test_manager_and_reviewer_deterministic_safety_controls() -> None:
         WeeklyOpsCouncil._validate_reviewer(
             {
                 "verdict": "revision_required",
+                "revision_target": "manager",
+                "revision_platform": "",
                 "issues": [
                     {
                         "code": "INVALID CODE",
@@ -940,7 +1020,7 @@ def test_v15_pending_run_migrates_and_binds_default_before_execute(tmp_path: Pat
     bootstrap = app.bootstrap("A", "owner@example.com")
     owner = app.auth.authenticate(bootstrap["api_key"])
     run = app.agent_runs.request(
-        owner, "weekly_ops", "Execute this migrated pending run.",
+        owner, "weekly_ops", "优化 Amazon listing title in this migrated pending run.",
         evidence("amazon"), "legacy-pending", "legacy-request",
     )
     with app.db.transaction() as conn:
@@ -1022,7 +1102,7 @@ def test_agent_graph_api_routes_and_run_fields(tmp_path: Path) -> None:
         "/v1/agent-runs",
         {
             "workflow": "weekly_ops",
-            "objective": "Use the selected published graph version.",
+                "objective": "优化 Amazon listing title with the selected graph version.",
             "evidence": evidence("amazon"),
             "graph_version_id": version_id,
             "metric_observation_ids": [],

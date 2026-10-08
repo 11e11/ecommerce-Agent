@@ -1446,7 +1446,7 @@ paths:
   /v1/agent-runs/{runId}/execute:
     post:
       summary: Execute the bound Domain Agent Graph and independent Reviewer
-      description: Requires operator or higher plus OPENAI_API_KEY and EAI_OPENAI_MODEL in the server environment. Application code runs the Evidence Analyst and dynamic marketplace specialists in parallel, then the optional cross-platform controller, Manager, and Reviewer sequentially. No model tools are exposed.
+      description: Requires operator or higher and a configured model provider. A deterministic Router snapshots selected Skills before execution. Evidence Analyst and platform specialists run in parallel, followed by an optional cross-platform controller, Manager, and Reviewer. Research roles can call only bounded read-only knowledge tools; a revision_required verdict can replay its target and downstream roles once. Manager and Reviewer have no tools.
       parameters:
         - {$ref: '#/components/parameters/runId'}
       responses:
@@ -3258,9 +3258,11 @@ components:
     ReviewerVerdict:
       type: object
       additionalProperties: false
-      required: [verdict, issues, evidence_refs, limitations]
+      required: [verdict, issues, evidence_refs, limitations, revision_target, revision_platform]
       properties:
         verdict: {type: string, enum: [approved, revision_required, rejected]}
+        revision_target: {type: string, enum: [none, manager, cross_controller, platform_specialist]}
+        revision_platform: {type: string}
         issues:
           type: array
           maxItems: 20
@@ -3311,7 +3313,7 @@ components:
         tenant_id: {type: string, format: uuid}
         run_id: {type: string, format: uuid}
         task_id: {type: string, format: uuid, nullable: true}
-        kind: {type: string, enum: [input_evidence, specialist_finding, manager_synthesis, reviewer_verdict, weekly_ops_report]}
+        kind: {type: string, enum: [input_evidence, skill_route, specialist_finding, manager_synthesis, reviewer_verdict, weekly_ops_report]}
         attempt: {type: integer, minimum: 0}
         content:
           oneOf:

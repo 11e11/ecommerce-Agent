@@ -40,6 +40,7 @@ from .knowledge_client import (
     McpStdioKnowledgeClient,
     truncate_text,
 )
+from .skill_router import SkillRouter
 from .storage import Database, Principal
 
 
@@ -116,7 +117,7 @@ MANAGER_SCHEMA: dict[str, Any] = {
                     "action_type": {
                         "type": "string", "enum": ["analysis", "external_change"]
                     },
-                    "requires_approval": {"type": "boolean"},
+                    "requires_approval": {"type": "boolean", "enum": [True]},
                     "metric_claim": {
                         "type": "object",
                         "additionalProperties": False,
@@ -175,12 +176,14 @@ MANAGER_SCHEMA: dict[str, Any] = {
 REVIEWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["verdict", "issues", "evidence_refs", "limitations"],
+    "required": ["verdict", "issues", "evidence_refs", "limitations", "revision_target", "revision_platform"],
     "properties": {
         "verdict": {
             "type": "string",
             "enum": ["approved", "revision_required", "rejected"],
         },
+        "revision_target": {"type": "string", "enum": ["none", "manager", "cross_controller", "platform_specialist"]},
+        "revision_platform": {"type": "string"},
         "issues": {
             "type": "array",
             "maxItems": 20,
@@ -227,7 +230,8 @@ EVIDENCE_ANALYST = AgentSpec(
     ("ecom-applicability",),
     "Audit evidence completeness and freshness across every supplied platform. Separate supported "
     "findings from data gaps. Do not invent market, sales, price, benchmark, or policy facts. "
-    "Keep Metric Observation currencies, dimensions, and time grains in separate series.",
+    "Keep Metric Observation currencies, dimensions, and time grains in separate series. "
+    'Set the output platform field to exactly "cross_platform".',
     "cross_platform",
 )
 
@@ -236,7 +240,8 @@ CROSS_PLATFORM_CONTROLLER = AgentSpec(
     ("ecom-applicability", "ecom-listing"),
     "Compare platform-specialist findings without merging unlike metrics. Identify conflicts, "
     "shared dependencies, and data gaps. Do not transfer a platform rule to another platform "
-    "or aggregate unlike currencies, dimensions, or time grains.",
+    "or aggregate unlike currencies, dimensions, or time grains. "
+    'Set the output platform field to exactly "cross_platform".',
     "cross_platform",
 )
 
@@ -249,7 +254,10 @@ MANAGER = AgentSpec(
     "specialist present in the input or to human_operator. Never aggregate, compare as equivalent, "
     "or rank observations with different currencies, dimensions, time grains, or overlapping periods. "
     "Classify every priority as analysis or external_change and describe every Metric Observation use "
-    "with metric_claim. Every L7 priority requires human approval before downstream use.",
+    "with metric_claim. metric_claim rules: operation \"observe\" requires exactly one observation_ref; "
+    "operation \"compare\" or \"aggregate\" requires at least two observation_refs; operation \"none\" "
+    "requires an empty observation_refs list, and observation_refs must enumerate exactly the cited "
+    "metric_observation evidence_refs. Every L7 priority requires human approval before downstream use.",
     "cross_platform",
 )
 
@@ -261,7 +269,9 @@ REVIEWER = AgentSpec(
     "action framing. Return approved "
     "only when the report is evidence-bound and every external change remains approval-gated. "
     "For approval, cite every Evidence reference used by Manager and preserve every Manager limitation "
-    "verbatim in your limitations list.",
+    "verbatim in your limitations list. For revision_required choose exactly one revision_target: "
+    "manager, cross_controller, or platform_specialist; set revision_platform to the target marketplace "
+    "only for platform_specialist. Otherwise use revision_target none and an empty revision_platform.",
     "cross_platform",
 )
 
@@ -323,6 +333,7 @@ def _run_responses_research(
     tools: list[dict[str, Any]],
     tool_executor: Callable[[str, dict[str, Any]], str],
     max_tool_calls: int,
+    safety_identifier: str,
     extra_body: dict[str, Any],
     cache_key: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -337,15 +348,23 @@ def _run_responses_research(
     input_items: list[dict[str, Any]] = [
         {"role": "user", "content": [{"type": "input_text", "text": research_brief}]}
     ]
+
+    def _api_tool_name(name: str) -> str:
+        # Responses-API function names must match ^[a-zA-Z0-9_-]+$; MCP tool
+        # names carry dots (opc.search_knowledge), so sanitize on the wire and
+        # map back to the original name when executing a call.
+        return re.sub(r"[^A-Za-z0-9_-]", "_", name)
+
     api_tools = [
         {
             "type": "function",
-            "name": tool["name"],
+            "name": _api_tool_name(tool["name"]),
             "description": tool["description"],
             "parameters": tool["parameters"],
         }
         for tool in tools
     ]
+    original_tool_names = {_api_tool_name(tool["name"]): tool["name"] for tool in tools}
     notes: list[dict[str, Any]] = []
     for _ in range(max(1, max_tool_calls)):
         request_body: dict[str, Any] = {
@@ -376,7 +395,14 @@ def _run_responses_research(
                 status = getattr(response, "status", 200)
                 body = response.read()
         except HTTPError as exc:
-            raise ExternalServiceError(f"{label} returned HTTP {exc.code}") from exc
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
+            raise ExternalServiceError(
+                f"{label} returned HTTP {exc.code}: {detail}"
+            ) from exc
         except URLError as exc:
             raise ExternalServiceError(f"{label} request failed: {exc.reason}") from exc
         except TimeoutError as exc:
@@ -399,7 +425,8 @@ def _run_responses_research(
         if not calls:
             break
         for call in calls:
-            name = str(call.get("name") or "")
+            emitted_name = str(call.get("name") or "")
+            name = original_tool_names.get(emitted_name, emitted_name)
             raw_arguments = call.get("arguments")
             try:
                 arguments = (
@@ -907,7 +934,7 @@ class DeepSeekResponsesProvider:
             ),
             "input": json.dumps(payload, ensure_ascii=False, sort_keys=True),
             "reasoning": {"effort": "none"},
-            "max_output_tokens": 3000,
+            "max_output_tokens": 8000,
             "user": safety_identifier,
             "text": {
                 "format": {
@@ -933,8 +960,13 @@ class DeepSeekResponsesProvider:
                 status = getattr(response, "status", 200)
                 body = response.read()
         except HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
             raise ExternalServiceError(
-                f"{self.provider_label} returned HTTP {exc.code}"
+                f"{self.provider_label} returned HTTP {exc.code}: {detail}"
             ) from exc
         except URLError as exc:
             raise ExternalServiceError(
@@ -977,12 +1009,30 @@ class DeepSeekResponsesProvider:
             raise ExternalServiceError(
                 f"{self.provider_label} response did not contain output_text"
             )
+        raw_text = "".join(text_parts)
         try:
-            structured = json.loads("".join(text_parts))
-        except json.JSONDecodeError as exc:
+            structured = json.loads(raw_text)
+        except json.JSONDecodeError:
+            # Tolerant parse: models occasionally wrap the JSON object in prose
+            # or markdown fences despite the json_schema response format.
+            candidate = raw_text.strip()
+            if candidate.startswith("```"):
+                candidate = candidate.strip("`").strip()
+                if candidate.startswith("json"):
+                    candidate = candidate[4:].strip()
+                candidate = candidate.rsplit("```", 1)[0].strip()
+            start = candidate.find("{")
+            structured = None
+            if start >= 0:
+                try:
+                    structured, _ = json.JSONDecoder().raw_decode(candidate[start:])
+                except json.JSONDecodeError:
+                    structured = None
+        if structured is None:
             raise ExternalServiceError(
-                f"{self.provider_label} structured output was not valid JSON"
-            ) from exc
+                f"{self.provider_label} structured output was not valid JSON: "
+                f"{raw_text[:200]}"
+            )
         if not isinstance(structured, dict):
             raise ExternalServiceError(
                 f"{self.provider_label} structured output was not an object"
@@ -1016,6 +1066,8 @@ class DeepSeekResponsesProvider:
             # OpenAI-only fields (safety_identifier, prompt_cache_key) never
             # reach the DeepSeek endpoint; keep the request shape minimal.
             extra_body={
+                # Non-thinking mode: thinking mode requires passing reasoning_text
+                # back on every subsequent turn of the tool loop.
                 "reasoning": {"effort": "none"},
                 "user": safety_identifier,
             },
@@ -1514,6 +1566,10 @@ class WeeklyOpsCouncil:
         objective, evidence, platforms = self.validate_request(
             workflow, objective, [*inline_evidence, *imported_evidence, *metric_evidence]
         )
+        route = SkillRouter(
+            self.skill_loader._root(),
+            json.loads((self.skill_loader._root().parent / "ontology.json").read_text(encoding="utf-8")),
+        ).select(objective, platforms)
         run, replayed = self.db.create_agent_run(
             principal.tenant_id,
             principal.user_id,
@@ -1525,6 +1581,7 @@ class WeeklyOpsCouncil:
             provider=self._provider_name(),
             graph_version_id=graph_version["id"],
             graph_version_hash=graph_version["definition_hash"],
+            skill_route=route,
             metric_observation_ids=observation_ids,
             origin=origin,
             parent_daily_ops_run_id=parent_daily_ops_run_id,
@@ -1643,10 +1700,16 @@ class WeeklyOpsCouncil:
         self, run: dict[str, Any], definition: dict[str, Any]
     ) -> tuple[list[AgentSpec], AgentSpec | None, AgentSpec, AgentSpec]:
         specialist_node = self._node_for_role(definition, "platform_specialist")
-        marketplace_specs = [
-            self._platform_spec(platform, self._spec_tool_policy(specialist_node))
-            for platform in self._marketplace_platforms(run)
-        ]
+        route = self.db.get_agent_route(run["tenant_id"], run["id"])
+        marketplace_specs = []
+        for platform in self._marketplace_platforms(run):
+            spec = self._platform_spec(platform, self._spec_tool_policy(specialist_node))
+            if route is not None:
+                selected = tuple(route["by_platform"].get(platform, []))
+                if not selected:
+                    raise ValidationError(f"Skill Router has no selected skill for {platform}")
+                spec = AgentSpec(spec.name, selected, spec.instructions, spec.platform, spec.tool_policy)
+            marketplace_specs.append(spec)
         evidence_node = self._node_for_role(definition, "evidence_analyst")
         cross_node = self._node_for_role(definition, "cross_controller")
         evidence_spec = AgentSpec(
@@ -1801,7 +1864,11 @@ class WeeklyOpsCouncil:
 
     @classmethod
     def _validate_manager_metric_claims(
-        cls, result: dict[str, Any], evidence: list[dict[str, Any]]
+        cls,
+        result: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        *,
+        coerce_incompatible_claims: bool = False,
     ) -> None:
         sources = {source["source_id"]: source for source in evidence}
         for item in [*result["priorities"], *result["risks"]]:
@@ -1823,6 +1890,56 @@ class WeeklyOpsCouncil:
                 or any(not isinstance(ref, str) for ref in refs)
             ):
                 raise ExternalServiceError("manager metric_claim references are invalid")
+            if coerce_incompatible_claims:
+                # A valid claim cites exactly the metric observations present
+                # in the priority's evidence_refs, all sharing unit, currency,
+                # dimensions, and time grain when there are several. Real
+                # models violate every combination of this (empty claim over
+                # cited observations, import ids cited as observations, mixed
+                # units, multi-refs under "observe"). Coerce deterministically
+                # to a single-observation "observe" claim, or "none" when
+                # nothing citable remains.
+                cited = list(item.get("evidence_refs", []))
+                ev_metric = [
+                    ref
+                    for ref in cited
+                    if ref in sources
+                    and sources[ref].get("source_type") == "metric_observation"
+                ]
+                refs_metric = [
+                    ref
+                    for ref in refs
+                    if ref in sources
+                    and sources[ref].get("source_type") == "metric_observation"
+                ]
+                pool = refs_metric or ev_metric
+                scopes = set()
+                for ref in pool:
+                    data = sources[ref]["data"]
+                    scopes.add(
+                        (
+                            data.get("unit"),
+                            data.get("currency"),
+                            json.dumps(data.get("dimensions") or {}, sort_keys=True),
+                            data.get("time_grain"),
+                        )
+                    )
+                needs_fix = set(refs) != set(ev_metric) or (
+                    len(pool) > 1 and (operation == "observe" or len(scopes) != 1)
+                )
+                if needs_fix:
+                    if pool:
+                        keep = pool[0]
+                        item["evidence_refs"] = [
+                            ref for ref in cited if ref not in set(ev_metric)
+                        ] + [keep]
+                        claim["observation_refs"] = [keep]
+                        claim["operation"] = "observe"
+                    else:
+                        claim["observation_refs"] = []
+                        claim["operation"] = "none"
+                    refs = claim["observation_refs"]
+                    operation = claim["operation"]
             cited_refs = item.get("evidence_refs", [])
             metric_refs = {
                 ref for ref in cited_refs
@@ -1892,10 +2009,21 @@ class WeeklyOpsCouncil:
         source_platforms: dict[str, str],
         manager_report: dict[str, Any],
     ) -> None:
-        if set(result) != {"verdict", "issues", "evidence_refs", "limitations"}:
+        if set(result) != {"verdict", "issues", "evidence_refs", "limitations", "revision_target", "revision_platform"}:
             raise ExternalServiceError("reviewer output fields did not match the required schema")
         if result.get("verdict") not in {"approved", "revision_required", "rejected"}:
             raise ExternalServiceError("reviewer returned an unknown verdict")
+        target = result.get("revision_target")
+        platform = result.get("revision_platform")
+        if result["verdict"] == "revision_required":
+            if target not in {"manager", "cross_controller", "platform_specialist"}:
+                raise ExternalServiceError("reviewer revision target is invalid")
+            if target == "platform_specialist" and platform not in set(source_platforms.values()) - {"cross_platform"}:
+                raise ExternalServiceError("reviewer revision platform is invalid")
+            if target != "platform_specialist" and platform != "":
+                raise ExternalServiceError("reviewer revision platform must be empty")
+        elif target != "none" or platform != "":
+            raise ExternalServiceError("reviewer non-revision verdict must not target a task")
         evidence_refs = result.get("evidence_refs")
         if (
             not isinstance(evidence_refs, list)
@@ -2001,6 +2129,7 @@ class WeeklyOpsCouncil:
         run: dict[str, Any],
         safety_identifier: str,
         knowledge_client: KnowledgeToolClient | None = None,
+        revision_feedback: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         evidence = (
             run["evidence"]
@@ -2018,6 +2147,8 @@ class WeeklyOpsCouncil:
             "skill_contracts": self.skill_loader.load(spec.skill_ids),
             "evidence": evidence,
         }
+        if revision_feedback is not None:
+            payload["revision_feedback"] = revision_feedback
         research_notes = self._research_notes(spec, run, safety_identifier, knowledge_client)
         if research_notes:
             payload["research_notes"] = research_notes
@@ -2064,13 +2195,22 @@ class WeeklyOpsCouncil:
             f"Assigned skills: {', '.join(spec.skill_ids) or 'none'}. "
             "Note only rule names, thresholds, and chapter ids relevant to the objective."
         )
+        tool_calls_used = 0
 
         def tool_executor(name: str, arguments: dict[str, Any]) -> str:
+            nonlocal tool_calls_used
             started = time.monotonic()
             digest = hashlib.sha256(
                 json.dumps(arguments, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()[:16]
             base = {"agent_name": spec.name, "tool": name, "arguments_digest": digest}
+            if tool_calls_used >= max_tool_calls:
+                self.db.record_tool_invocation(
+                    tenant_id, run_id, spec.name,
+                    summary={**base, "refused": True, "reason": "tool_budget_exhausted"},
+                )
+                return "ERROR: tool call budget exhausted"
+            tool_calls_used += 1
             if name not in allowed:
                 self.db.record_tool_invocation(
                     tenant_id, run_id, spec.name,
@@ -2146,9 +2286,10 @@ class WeeklyOpsCouncil:
         safety_identifier: str,
         source_platforms: dict[str, str],
         knowledge_client: KnowledgeToolClient | None = None,
+        revision_feedback: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         try:
-            result = self._run_specialist(spec, run, safety_identifier, knowledge_client)
+            result = self._run_specialist(spec, run, safety_identifier, knowledge_client, revision_feedback)
             self._validate_refs(
                 result,
                 source_platforms,
@@ -2174,21 +2315,29 @@ class WeeklyOpsCouncil:
         safety_identifier: str,
         source_platforms: dict[str, str],
         findings: dict[str, dict[str, Any]],
+        knowledge_client: KnowledgeToolClient | None = None,
+        revision_feedback: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
         try:
+            payload = {
+                "workflow": run["workflow"],
+                "objective": run["objective"],
+                "target_platform": "cross_platform",
+                "platforms": self._marketplace_platforms(run),
+                "assigned_skills": list(spec.skill_ids),
+                "skill_contracts": self.skill_loader.load(spec.skill_ids),
+                "specialist_findings": findings,
+            }
+            notes = self._research_notes(spec, run, safety_identifier, knowledge_client)
+            if notes:
+                payload["research_notes"] = notes
+            if revision_feedback is not None:
+                payload["revision_feedback"] = revision_feedback
             result = self.provider.complete(
                 agent_name=spec.name,
                 instructions=spec.instructions,
-                payload={
-                    "workflow": run["workflow"],
-                    "objective": run["objective"],
-                    "target_platform": "cross_platform",
-                    "platforms": self._marketplace_platforms(run),
-                    "assigned_skills": list(spec.skill_ids),
-                    "skill_contracts": self.skill_loader.load(spec.skill_ids),
-                    "specialist_findings": findings,
-                },
+                payload=payload,
                 output_schema=SPECIALIST_SCHEMA,
                 safety_identifier=safety_identifier,
             )
@@ -2218,12 +2367,10 @@ class WeeklyOpsCouncil:
         source_platforms: dict[str, str],
         findings: dict[str, dict[str, Any]],
         valid_owners: set[str],
+        revision_feedback: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
-        report = self.provider.complete(
-            agent_name=spec.name,
-            instructions=spec.instructions,
-            payload={
+        payload = {
                 "workflow": run["workflow"],
                 "objective": run["objective"],
                 "platforms": self._marketplace_platforms(run),
@@ -2237,7 +2384,13 @@ class WeeklyOpsCouncil:
                     for source in run["evidence"]
                 ],
                 "specialist_findings": findings,
-            },
+            }
+        if revision_feedback is not None:
+            payload["revision_feedback"] = revision_feedback
+        report = self.provider.complete(
+            agent_name=spec.name,
+            instructions=spec.instructions,
+            payload=payload,
             output_schema=MANAGER_SCHEMA,
             safety_identifier=safety_identifier,
         )
@@ -2247,7 +2400,9 @@ class WeeklyOpsCouncil:
             manager=True,
             valid_owners=valid_owners,
         )
-        self._validate_manager_metric_claims(report, run["evidence"])
+        self._validate_manager_metric_claims(
+            report, run["evidence"], coerce_incompatible_claims=True
+        )
         self.db.complete_agent_task(
             principal.tenant_id,
             run_id,
@@ -2399,6 +2554,7 @@ class WeeklyOpsCouncil:
                     safety_identifier,
                     source_platforms,
                     findings,
+                    knowledge_client,
                 ),
                 run_manager=lambda findings: self._execute_manager_task(
                     principal,
@@ -2427,6 +2583,47 @@ class WeeklyOpsCouncil:
                 raise graph_state["failure"]
             report = graph_state["report"]
             review = graph_state["review"]
+            if review["verdict"] == "revision_required":
+                target = review["revision_target"]
+                feedback = review["issues"]
+                findings = dict(graph_state.get("findings", {}))
+                revised = []
+                if target == "platform_specialist":
+                    platform = review["revision_platform"]
+                    specialist = next(
+                        (spec for spec in initial_specs if spec.platform == platform), None
+                    )
+                    if specialist is None:
+                        raise ExternalServiceError("reviewer targeted an unavailable specialist")
+                    revised.append(specialist.name)
+                elif target == "cross_controller":
+                    if cross_spec is None:
+                        raise ExternalServiceError("reviewer targeted an unavailable cross controller")
+                elif target != "manager":
+                    raise ExternalServiceError("reviewer returned an invalid revision target")
+                if cross_spec is not None and target in {"platform_specialist", "cross_controller"}:
+                    revised.append(cross_spec.name)
+                revised.extend([manager_spec.name, reviewer_spec.name])
+                self.db.reset_agent_tasks_for_revision(principal.tenant_id, run_id, revised)
+                if target == "platform_specialist":
+                    self.db.start_agent_task(principal.tenant_id, run_id, specialist.name)
+                    findings[specialist.name] = self._execute_specialist_task(
+                        principal, run_id, specialist, run, safety_identifier,
+                        source_platforms, knowledge_client, feedback,
+                    )
+                if cross_spec is not None and target in {"platform_specialist", "cross_controller"}:
+                    findings[cross_spec.name] = self._execute_cross_task(
+                        principal, run_id, cross_spec, run, safety_identifier,
+                        source_platforms, findings, knowledge_client, feedback,
+                    )
+                report = self._execute_manager_task(
+                    principal, run_id, manager_spec, run, safety_identifier,
+                    source_platforms, findings, valid_owners, feedback,
+                )
+                review = self._execute_reviewer_task(
+                    principal, run_id, reviewer_spec, run, safety_identifier,
+                    source_platforms, findings, report,
+                )
             bundle = self.db.complete_agent_run(
                 principal.tenant_id,
                 run_id,

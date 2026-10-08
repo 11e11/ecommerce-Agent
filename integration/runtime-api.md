@@ -969,20 +969,29 @@ marketplace specialists (Amazon, Shopify, or any input ontology marketplace)
 run in parallel, an optional multi-marketplace Controller follows, then Manager
 and an independent AI Reviewer run sequentially.
 
-Every node contains an explicit tool policy with `allowed_tools=[]` and
-`max_tool_calls=0`: model tools and connector/action tools are not exposed.
+The deterministic Router selects Skills from the run objective before the run
+is created, filters them by input marketplace, and saves its result as an
+immutable `skill_route` artifact. No reliable match blocks run creation.
+Evidence Analyst, platform specialists, and the cross-platform Controller can
+use bounded read-only knowledge tools. Manager and Reviewer remain tool-free;
+connector/action tools are not exposed.
 Free-form node prompts are also rejected; each role uses a reviewed
 `instruction_key`. Runs persist their published graph ID/hash and an immutable
 Evidence/Metric Observation snapshot before execution. Manager and Reviewer are
 separate model calls, and a run whose Reviewer verdict is not `approved` cannot
 be consumed by L8/L9.
+For `revision_required`, Reviewer names a target role and, when needed, one
+marketplace. The executor reruns that role and its downstream roles once,
+preserving each prior task artifact. A second non-approved verdict is final.
 
 `definition_hash` is execution-bound: it includes the canonical graph plus an
 `execution_contract_hash` over the installed orchestration code, ontology, and
 every Skill manifest that can affect dynamic platform resolution. A package or
 Skill change therefore makes an older version stale; new requests and queued
 runs fail closed until an admin creates and publishes a version against the new
-contract. Pre-L7 runs migrate to `review_status=pending` and cannot enter the
+contract. Existing tenants must publish a fresh graph version after upgrading
+to the Router and revision contract; old versions and their artifacts remain
+unchanged. Pre-L7 runs migrate to `review_status=pending` and cannot enter the
 Briefing without being rerun through a real Reviewer.
 
 Manager output structurally classifies each priority as `analysis` or

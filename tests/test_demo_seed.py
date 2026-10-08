@@ -111,7 +111,7 @@ def test_demo_provider_executes_a_metric_only_graph_run(tmp_path: Path) -> None:
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "Review one selected Demo metric without assuming other report types.",
+        "优化 Amazon listing title using one selected Demo metric.",
         None,
         "demo-metric-only",
         "demo-metric-only-request",

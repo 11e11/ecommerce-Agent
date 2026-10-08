@@ -853,10 +853,16 @@ def main() -> int:
                         "dist/openapi/runtime-api.yaml: MetricBackfillRequest limit must be 1..100"
                     )
                 tool_policy = schemas.get("ToolPolicy", {})
-                if tool_policy.get("properties", {}).get("max_tool_calls", {}).get("maximum") != 0:
-                    problems.append("dist/openapi/runtime-api.yaml: L7 tool policy must cap model tools at zero")
-                if tool_policy.get("properties", {}).get("allowed_tools", {}).get("maxItems") != 0:
-                    problems.append("dist/openapi/runtime-api.yaml: L7 allowed_tools must be empty")
+                if tool_policy.get("properties", {}).get("max_tool_calls", {}).get("maximum") != 8:
+                    problems.append("dist/openapi/runtime-api.yaml: research tool calls must be capped at eight")
+                allowed_tools = tool_policy.get("properties", {}).get("allowed_tools", {})
+                if allowed_tools.get("maxItems") != 4 or set(allowed_tools.get("items", {}).get("enum", [])) != {
+                    "opc.search_knowledge", "opc.get_constraints", "opc.read_chapter", "opc.hybrid_search"
+                }:
+                    problems.append("dist/openapi/runtime-api.yaml: only bounded read-only knowledge tools are allowed")
+                reviewer_fields = set(schemas.get("ReviewerVerdict", {}).get("required", []))
+                if not {"revision_target", "revision_platform"} <= reviewer_fields:
+                    problems.append("dist/openapi/runtime-api.yaml: Reviewer must name a revision target")
                 graph_definition = schemas.get("AgentGraphDefinition", {}).get("properties", {})
                 if (
                     graph_definition.get("nodes", {}).get("minItems") != 5

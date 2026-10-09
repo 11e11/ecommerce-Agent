@@ -11,6 +11,7 @@ from threading import Barrier
 
 import pytest
 
+import agent_outputs
 from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
 from ecommerce_ai_skills.runtime.agent_graphs import default_graph_definition
 from ecommerce_ai_skills.runtime.errors import (
@@ -35,6 +36,9 @@ class DailyProvider:
         self.calls.append((agent_name, payload))
         if self.fail:
             raise RuntimeError("fixture provider failure")
+        kind = agent_outputs.schema_kind(output_schema)
+        if kind in {"plan", "reflection", "audit"}:
+            return agent_outputs.respond(agent_name, payload, output_schema)
         if agent_name == "store_manager":
             source = payload["evidence_catalog"][0]
             return {
@@ -43,6 +47,7 @@ class DailyProvider:
                     "rank": 1, "title": "Review current performance",
                     "why_now": "The scheduled source is eligible.",
                     "evidence_refs": [source["source_id"]],
+                    "knowledge_citations": agent_outputs.citation_for(payload),
                     "platforms": [source["platform"]],
                     "expected_impact": "Clarify the next decision.", "confidence": "medium",
                     "recommended_owner": f"platform_{source['platform']}_operator",
@@ -50,7 +55,9 @@ class DailyProvider:
                     "action_type": "external_change", "requires_approval": True,
                     "metric_claim": {"operation": "none", "observation_refs": []},
                 }],
-                "risks": [], "limitations": ["Only scheduled evidence was reviewed."],
+                "risks": [],
+                "limitations": agent_outputs.limitation_lines(payload),
+                "evidence_approach": agent_outputs.approach_rows(payload),
             }
         if agent_name == "operations_reviewer":
             source = payload["evidence_catalog"][0]
@@ -67,21 +74,13 @@ class DailyProvider:
                 "limitations": payload["manager_report"]["limitations"],
             }
         platform = payload["target_platform"]
-        evidence = payload.get("evidence") or []
-        source_id = evidence[0]["source_id"] if evidence else next(
-            finding["evidence_refs"][0]
-            for result in payload["specialist_findings"].values()
-            for finding in result["findings"]
-        )
-        return {
-            "platform": platform, "summary": "Evidence-bound daily finding.",
-            "findings": [{
-                "title": "Review performance", "severity": "warning",
-                "confidence": "medium", "evidence_refs": [source_id],
-                "recommendation": "Review before changing operations.",
-            }],
-            "data_gaps": [],
-        }
+        base = agent_outputs.respond(agent_name, payload, output_schema)
+        base["platform"] = platform
+        base["summary"] = "Evidence-bound daily finding."
+        base["findings"][0]["title"] = "Review performance"
+        base["findings"][0]["recommendation"] = "Review before changing operations."
+        base["data_gaps"] = []
+        return base
 
 
 def make_app(tmp_path: Path, provider=None):

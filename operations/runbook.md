@@ -602,3 +602,75 @@ failed execution before the API returns `502`; inspect
 retrying. Retry uses a new idempotency key but reuses the same execution row,
 requires an unexpired approved version with remaining attempts, and cannot
 override a capability block or expired proposal.
+
+## Specialist harness upgrade
+
+After installing the new package, explicitly publish the tenant's current
+default graph as an admin. Use an environment variable so the key does not
+enter shell history:
+
+```bash
+opc-ecommerce graph-publish-default --db /secure/runtime.sqlite
+```
+
+The command reads `OPC_RUNTIME_API_KEY` (or `--api-key`). It is idempotent for
+the current execution contract, retires the previously published version,
+and preserves completed runs and their version bindings. Queued runs bound
+to an old contract must be requested again against the new version. Rebind
+Daily Ops schedules to the newly published graph; no silent upgrade occurs.
+
+The internal MCP process receives an explicit environment allowlist:
+system process variables plus `EAI_EMBEDDING_BASE_URL`,
+`EAI_EMBEDDING_API_KEY`, `EAI_EMBEDDING_MODEL`, `EAI_RERANK_MODEL`,
+`EAI_RERANK_API_KEY`, `EAI_RAG_CACHE`, `MILVUS_URI`, `MILVUS_COLLECTION`,
+`OPC_RUNTIME_URL`, and `OPC_RUNTIME_API_KEY`. Other credentials are not
+forwarded. Configure the runtime URL/key to enable four read-only ops tools.
+
+The Analyst first computes and interprets an evidence audit. Invalid model
+judgement becomes `unknown` without deleting the deterministic audit.
+Standard/deep specialists then plan, execute each step with bounded research,
+reflect, and replan at most once. Simple tasks have no plan/reflection.
+Cross Controller remains a single research pass plus a structured answer;
+Manager and Reviewer have no tools.
+
+| Tier | Plan steps | Tool calls | Ops pulls | Replans | Deadline |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| simple | 0 | 4 | 0 | 0 | 120s |
+| standard | 5 | 6 | 2 | 1 | 240s |
+| deep | 8 | 8 | 2 | 1 | 360s |
+
+Published graph permissions may reduce these ceilings. Provider network
+timeouts and MCP lock/call timeouts use the remaining deadline. On deadline
+exhaustion the specialist returns an explicit abstention; it does not start
+another model call. In-flight transports must honour their timeout contract.
+
+Inspect run bundles for `evidence_audit_deterministic`, `evidence_audit`,
+`agent_plan`, `agent_reflection`, `tool_evidence_snapshot`, and step/tool/usage
+events. Snapshots freeze excerpts, fetch times, and digests. Manager's
+`evidence_approach` reports each platform's approach and sufficiency.
+`weekly_ops_report.execution_gate` is independent of Reviewer approval:
+non-supported audit or non-sufficient specialists can produce a report but
+cannot feed automated Briefing/proposal actions.
+
+Run the deterministic demonstration with:
+
+```bash
+python scripts/demo_specialist_harness.py
+```
+
+This uses explicit fixture data and no live model or platform credentials.
+No UI changes or cross-day memory are included. A future long-term memory
+store should be scoped by tenant/platform, retain source snapshot ids and
+expiry, and require revalidation before a later run reuses a conclusion.
+The current working memory lasts only for one task attempt.
+
+### Future cross-day memory design (not implemented)
+
+Store source-backed observations separately from past model conclusions.
+Index by tenant, platform, skill, entity, and observation window; retain
+snapshot digest, source id, graph version, and expiry. A later run retrieves
+only a bounded summary and treats it as historical evidence. Refresh expired
+sources and recompute the audit before allowing a prior conclusion to influence
+an action. Deletions and tenant retention rules must apply to both the memory
+entry and its source snapshot. Model-written preferences or unverified claims
+must not become operational facts automatically.

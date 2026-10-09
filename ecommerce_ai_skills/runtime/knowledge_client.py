@@ -10,15 +10,71 @@ reach a prompt — an unbounded chapter dump is a context bug, not a feature.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from .errors import ConnectorNotConfiguredError, ExternalServiceError
 
 MAX_TOOL_RESULT_CHARS = 4_000
 MAX_RESEARCH_NOTES_CHARS = 16_000
+
+# The MCP SDK spawns the server with a filtered environment (PATH, TEMP,
+# USERPROFILE, ...) when ``env`` is not passed explicitly. That silently strips
+# every credential the server needs: without the embedding key
+# ``opc.hybrid_search`` loses its dense leg and degrades to keyword-only, and
+# without the runtime URL the four read-only ops tools are not even listed, so
+# "let the agent pull its own data" would be a no-op. Pass an explicit
+# least-privilege allowlist instead of the whole environment.
+INHERITED_ENV_KEYS = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERPROFILE",
+    "PROCESSOR_ARCHITECTURE",
+    "PROGRAMFILES",
+    "PROGRAMDATA",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+)
+CREDENTIAL_ENV_KEYS = (
+    "EAI_EMBEDDING_BASE_URL",
+    "EAI_EMBEDDING_API_KEY",
+    "EAI_EMBEDDING_MODEL",
+    "EAI_RERANK_MODEL",
+    "EAI_RERANK_API_KEY",
+    "EAI_RAG_CACHE",
+    "MILVUS_URI",
+    "MILVUS_COLLECTION",
+    "OPC_RUNTIME_URL",
+    "OPC_RUNTIME_API_KEY",
+)
+
+
+def child_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build the least-privilege environment for the bundled MCP server."""
+    source = os.environ if environ is None else environ
+    allowed: dict[str, str] = {}
+    for key in (*INHERITED_ENV_KEYS, *CREDENTIAL_ENV_KEYS):
+        value = source.get(key)
+        if value:
+            allowed[key] = value
+    return allowed
 
 
 def truncate_text(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> tuple[str, bool]:
@@ -54,7 +110,7 @@ class McpStdioKnowledgeClient:
         self._done = threading.Event()
         self._start_error: list[Exception] = []
 
-    def _ensure_session(self) -> Any:
+    def _ensure_session(self, timeout_seconds: float | None = None) -> Any:
         if self._session is not None:
             return self._session
         try:
@@ -72,6 +128,7 @@ class McpStdioKnowledgeClient:
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "ecommerce_ai_skills.cli", "mcp", "--dist", dist],
+            env=child_environment(),
         )
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -99,7 +156,7 @@ class McpStdioKnowledgeClient:
                 self._done.set()
 
         asyncio.run_coroutine_threadsafe(_main(), self._loop)
-        if not self._ready.wait(timeout=self._timeout):
+        if not self._ready.wait(timeout=timeout_seconds or self._timeout):
             raise ExternalServiceError("MCP knowledge client did not start in time")
         if self._session is None:
             detail = f": {self._start_error[0]}" if self._start_error else ""
@@ -108,18 +165,24 @@ class McpStdioKnowledgeClient:
             )
         return self._session
 
-    def call(self, name: str, arguments: dict[str, Any]) -> str:
-        with self._lock:
-            session = self._ensure_session()
+    def call(self, name: str, arguments: dict[str, Any], timeout_seconds: float | None = None) -> str:
+        deadline = time.monotonic() + (timeout_seconds or self._timeout)
+        if not self._lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise ExternalServiceError("MCP tool lock deadline reached")
+        try:
+            session = self._ensure_session(max(0.001, deadline - time.monotonic()))
 
             async def _invoke() -> Any:
                 return await session.call_tool(name, arguments)
 
             future = asyncio.run_coroutine_threadsafe(_invoke(), self._loop)
             try:
-                result = future.result(timeout=self._timeout)
+                result = future.result(timeout=max(0.001, deadline - time.monotonic()))
             except Exception as exc:
+                future.cancel()
                 raise ExternalServiceError(f"MCP tool call failed: {exc}") from exc
+        finally:
+            self._lock.release()
         if getattr(result, "isError", False):
             raise ExternalServiceError(f"MCP tool {name} returned an error result")
         parts = []

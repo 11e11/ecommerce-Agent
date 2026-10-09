@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import agent_outputs
 from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
 from ecommerce_ai_skills.runtime.errors import (
     AuthorizationError,
@@ -26,7 +27,10 @@ class Provider:
     def configuration(self):
         return "proposal_fixture", "proposal-fixture-v1"
 
-    def complete(self, *, agent_name, payload, **_):
+    def complete(self, *, agent_name, payload, output_schema, **_):
+        kind = agent_outputs.schema_kind(output_schema)
+        if kind in {"plan", "reflection", "audit"}:
+            return agent_outputs.respond(agent_name, payload, output_schema)
         if agent_name == "store_manager":
             source = payload["evidence_catalog"][0]
             return {
@@ -35,6 +39,7 @@ class Provider:
                     "rank": 1, "title": "Review current performance",
                     "why_now": "Current evidence requires a controlled follow-up.",
                     "evidence_refs": [source["source_id"]],
+                    "knowledge_citations": agent_outputs.citation_for(payload),
                     "platforms": [source["platform"]],
                     "expected_impact": "Validate the operating response.",
                     "confidence": "medium", "recommended_owner": "human_operator",
@@ -42,29 +47,26 @@ class Provider:
                     "action_type": "external_change", "requires_approval": True,
                     "metric_claim": {"operation": "none", "observation_refs": []},
                 }],
-                "risks": [], "limitations": ["Limited to the selected source."],
+                "risks": [],
+                "limitations": agent_outputs.limitation_lines(payload),
+                "evidence_approach": agent_outputs.approach_rows(payload),
             }
         if agent_name == "operations_reviewer":
             source = payload["evidence_catalog"][0]
             return {
                 "verdict": "approved", "issues": [],
+                "revision_target": "none", "revision_platform": "",
                 "evidence_refs": [source["source_id"]],
                 "limitations": payload["manager_report"]["limitations"],
             }
         platform = payload["target_platform"]
-        evidence = payload.get("evidence") or []
-        source_id = evidence[0]["source_id"] if evidence else next(
-            finding["evidence_refs"][0]
-            for result in payload["specialist_findings"].values()
-            for finding in result["findings"]
-        )
-        return {
-            "platform": platform, "summary": "Bound finding.",
-            "findings": [{
-                "title": "Review", "severity": "warning", "confidence": "medium",
-                "evidence_refs": [source_id], "recommendation": "Review it.",
-            }], "data_gaps": [],
-        }
+        base = agent_outputs.respond(agent_name, payload, output_schema)
+        base["platform"] = platform
+        base["summary"] = "Bound finding."
+        base["findings"][0]["title"] = "Review"
+        base["findings"][0]["recommendation"] = "Review it."
+        base["data_gaps"] = []
+        return base
 
 
 def make_context(tmp_path: Path, *, platform: str = "amazon"):
@@ -75,7 +77,7 @@ def make_context(tmp_path: Path, *, platform: str = "amazon"):
     graph = app.agent_graphs.ensure_default(owner)
     schedule = app.daily_ops.create(
         owner, name=f"{platform} daily", platform=platform,
-        objective="Review the current operating priorities for today.",
+        objective="AI 能做吗？判断这批经营数据是否适合 AI 分析，保留人工复核。",
         timezone_name="UTC", local_time="00:01", graph_version_id=graph["id"],
         evidence_selectors=[{"report_type": report_type}], max_source_age_hours=72,
         enabled=True, request_id="schedule",

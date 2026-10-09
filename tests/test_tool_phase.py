@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import agent_outputs
 from ecommerce_ai_skills.runtime.api import RuntimeApplication
 from ecommerce_ai_skills.runtime.agent_graphs import (
     AgentGraphService,
@@ -88,62 +89,7 @@ class ResearchProvider:
     def complete(self, *, agent_name, instructions, payload, output_schema, safety_identifier):
         with self.lock:
             self.calls.append((agent_name, payload))
-        if agent_name == "operations_reviewer":
-            return {
-                "verdict": "approved",
-                "revision_target": "none",
-                "revision_platform": "",
-                "issues": [],
-                "evidence_refs": [s["source_id"] for s in payload["evidence_catalog"]],
-                "limitations": payload["manager_report"].get("limitations", []),
-            }
-        if agent_name == "store_manager":
-            catalog = payload["evidence_catalog"]
-            primary = catalog[0]["source_id"]
-            return {
-                "executive_summary": "Prioritize the evidence-backed campaign review.",
-                "priorities": [
-                    {
-                        "rank": 1,
-                        "title": "Review launch campaign efficiency",
-                        "why_now": "The supplied weekly ads export shows current spend and sales.",
-                        "evidence_refs": [primary],
-                        "platforms": [catalog[0]["platform"]],
-                        "expected_impact": "Clarify whether budget should be reallocated.",
-                        "confidence": "medium",
-                        "recommended_owner": "human_operator",
-                        "downstream_action": "Prepare a bid-change proposal without applying it.",
-                        "action_type": "external_change",
-                        "requires_approval": True,
-                        "metric_claim": {"operation": "none", "observation_refs": []},
-                    }
-                ],
-                "risks": [],
-                "limitations": ["Only supplied evidence was reviewed."],
-            }
-        platform = payload["target_platform"]
-        evidence = [
-            source for source in payload.get("evidence", [])
-            if platform == "cross_platform"
-            or source["platform"] in {platform, "cross_platform"}
-        ]
-        source_id = evidence[0]["source_id"] if evidence else (
-            payload["specialist_findings"]["evidence_analyst"]["findings"][0]["evidence_refs"][0]
-        )
-        return {
-            "platform": platform,
-            "summary": f"{agent_name} completed an evidence-bound review.",
-            "findings": [
-                {
-                    "title": "Review current campaign",
-                    "severity": "warning",
-                    "confidence": "medium",
-                    "evidence_refs": [source_id],
-                    "recommendation": "Validate profitability before changing bids.",
-                }
-            ],
-            "data_gaps": ["Order history was not supplied."],
-        }
+        return agent_outputs.respond(agent_name, payload, output_schema)
 
 
 def _application(tmp_path: Path, provider) -> tuple[RuntimeApplication, object]:
@@ -168,35 +114,36 @@ def test_tool_enabled_roles_run_research_and_persist_notes(tmp_path: Path) -> No
     assert bundle["run"]["status"] == "completed"
     assert bundle["run"]["review_status"] == "approved"
     assert {name for name, _ in provider.research_calls} == {
-        "evidence_analyst", "platform_amazon_operator",
-        "platform_shopify_operator", "cross_platform_controller",
+        "platform_amazon_operator", "platform_shopify_operator", "cross_platform_controller",
     }
-    assert all(tools == ["opc.search_knowledge", "opc.get_constraints", "opc.read_chapter"]
-               for _, tools in provider.research_calls)
-    analyst_payload = next(
-        payload for name, payload in provider.calls if name == "evidence_analyst"
+    assert all(tools == ["opc.search_knowledge"] for name, tools in provider.research_calls
+               if name.startswith("platform_"))
+    assert not any(name == "evidence_analyst" for name, _ in provider.research_calls)
+    # Standard-tier roles also make plan/reflection calls, so look for the call
+    # that carried the research notes rather than the first one for that role.
+    assert any(
+        payload.get("research_notes")
+        for name, payload in provider.calls
+        if name == "platform_amazon_operator"
     )
-    assert analyst_payload["research_notes"][0]["result"] == "knowledge-result-for-opc.search_knowledge"
-    specialist_payload = next(
-        payload for name, payload in provider.calls if name == "platform_amazon_operator"
+    assert any(
+        payload.get("research_notes")
+        for name, payload in provider.calls
+        if name == "cross_platform_controller"
     )
-    assert specialist_payload["research_notes"]
-    cross_payload = next(
-        payload for name, payload in provider.calls if name == "cross_platform_controller"
-    )
-    assert cross_payload["research_notes"]
     # Every invocation is audited as a bounded task event.
     events = app.db.list_agent_events(principal.tenant_id, run["id"])
     tool_events = [event for event in events if event["event_type"] == "task.tool_call"]
-    assert len(tool_events) == 4
+    assert len(tool_events) == 3
     assert {event["payload"]["agent_name"] for event in tool_events} == {
-        "evidence_analyst", "platform_amazon_operator",
-        "platform_shopify_operator", "cross_platform_controller",
+        "platform_amazon_operator", "platform_shopify_operator", "cross_platform_controller",
     }
 
 
 def test_whitelist_refusal_is_audited_and_does_not_fail_the_run(tmp_path: Path) -> None:
-    provider = ResearchProvider(force_tool="opc.ops_proposals")
+    # opc.list_skills stays outside the research whitelist, so it exercises the
+    # executor's refusal path rather than a now-permitted tenant-data tool.
+    provider = ResearchProvider(force_tool="opc.list_skills")
     client = FakeKnowledgeClient()
     app, principal = _application(tmp_path, provider)
     app.agent_runs.knowledge_client = client
@@ -212,20 +159,17 @@ def test_whitelist_refusal_is_audited_and_does_not_fail_the_run(tmp_path: Path) 
     events = app.db.list_agent_events(principal.tenant_id, run["id"])
     tool_events = [event for event in events if event["event_type"] == "task.tool_call"]
     assert tool_events and tool_events[0]["payload"].get("refused") is True
-    analyst_payload = next(
-        payload for name, payload in provider.calls if name == "evidence_analyst"
-    )
-    assert analyst_payload["research_notes"][0]["result"].startswith("ERROR:")
+    assert not client.calls
 
 
 def test_executor_enforces_call_budget_even_if_provider_overcalls(tmp_path: Path) -> None:
     class OvercallingProvider(ResearchProvider):
         def research(self, *, agent_name, research_brief, tools, tool_executor, max_tool_calls, safety_identifier):
-            if agent_name != "evidence_analyst":
+            if agent_name != "platform_amazon_operator":
                 return []
             return [
-                {"tool": tools[0]["name"], "result": tool_executor(tools[0]["name"], {"query": "listing"})}
-                for _ in range(max_tool_calls + 1)
+                {"tool": tools[0]["name"], "result": tool_executor(tools[0]["name"], {"query": "listing " + str(index)})}
+                for index in range(max_tool_calls + 1)
             ]
 
     app, principal = _application(tmp_path, OvercallingProvider())
@@ -257,7 +201,7 @@ def test_research_results_are_truncated_before_reaching_a_prompt(tmp_path: Path)
 
     assert bundle["run"]["status"] == "completed"
     analyst_payload = next(
-        payload for name, payload in provider.calls if name == "evidence_analyst"
+        payload for name, payload in provider.calls if name == "platform_amazon_operator" and payload.get("research_notes")
     )
     note_result = analyst_payload["research_notes"][0]["result"]
     assert len(note_result) == MAX_TOOL_RESULT_CHARS + len("\n...[truncated, 1000 chars omitted]")
@@ -295,17 +239,17 @@ def test_graph_rejects_unbounded_or_empty_tool_policies() -> None:
     definition = default_graph_definition()
 
     over_budget = default_graph_definition()
-    over_budget["nodes"][0]["tool_policy"]["max_tool_calls"] = 9
+    over_budget["nodes"][1]["tool_policy"]["max_tool_calls"] = 9
     with pytest.raises(ValidationError, match="between 1 and 8"):
         AgentGraphService.validate_definition(over_budget)
 
     zero_budget = default_graph_definition()
-    zero_budget["nodes"][0]["tool_policy"]["max_tool_calls"] = 0
+    zero_budget["nodes"][1]["tool_policy"]["max_tool_calls"] = 0
     with pytest.raises(ValidationError, match="between 1 and 8"):
         AgentGraphService.validate_definition(zero_budget)
 
     empty_tools = default_graph_definition()
-    empty_tools["nodes"][0]["tool_policy"]["allowed_tools"] = []
+    empty_tools["nodes"][1]["tool_policy"]["allowed_tools"] = []
     with pytest.raises(ValidationError, match="non-empty subset"):
         AgentGraphService.validate_definition(empty_tools)
 

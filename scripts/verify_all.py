@@ -856,8 +856,9 @@ def main() -> int:
                 if tool_policy.get("properties", {}).get("max_tool_calls", {}).get("maximum") != 8:
                     problems.append("dist/openapi/runtime-api.yaml: research tool calls must be capped at eight")
                 allowed_tools = tool_policy.get("properties", {}).get("allowed_tools", {})
-                if allowed_tools.get("maxItems") != 4 or set(allowed_tools.get("items", {}).get("enum", [])) != {
-                    "opc.search_knowledge", "opc.get_constraints", "opc.read_chapter", "opc.hybrid_search"
+                if allowed_tools.get("maxItems") != 8 or set(allowed_tools.get("items", {}).get("enum", [])) != {
+                    "opc.search_knowledge", "opc.get_constraints", "opc.read_chapter", "opc.hybrid_search",
+                    "opc.ops_briefing", "opc.ops_metrics", "opc.ops_proposals", "opc.ops_evidence"
                 }:
                     problems.append("dist/openapi/runtime-api.yaml: only bounded read-only knowledge tools are allowed")
                 reviewer_fields = set(schemas.get("ReviewerVerdict", {}).get("required", []))
@@ -867,11 +868,11 @@ def main() -> int:
                 if (
                     graph_definition.get("nodes", {}).get("minItems") != 5
                     or graph_definition.get("nodes", {}).get("maxItems") != 5
-                    or graph_definition.get("edges", {}).get("minItems") != 6
-                    or graph_definition.get("edges", {}).get("maxItems") != 6
+                    or graph_definition.get("edges", {}).get("minItems") != 7
+                    or graph_definition.get("edges", {}).get("maxItems") != 7
                 ):
                     problems.append(
-                        "dist/openapi/runtime-api.yaml: L7 graph must expose the canonical 5-node/6-edge topology"
+                        "dist/openapi/runtime-api.yaml: L7 graph must expose the canonical 5-node/7-edge topology"
                     )
                 daily_brief = schemas.get("DailyOpsBrief", {})
                 daily_gap = schemas.get("DailyOpsSourceGap", {})

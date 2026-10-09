@@ -17,108 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.demo_seed import DemoSeedProvider
+from datetime import datetime, timedelta, timezone
 from ecommerce_ai_skills.runtime.storage import Database
 
 
-class PreviewProvider:
+class PreviewProvider(DemoSeedProvider):
     def configuration(self):
         return "ui_preview_fixture", "fixture-model"
-
-    def complete(
-        self, *, agent_name, instructions, payload, output_schema, safety_identifier
-    ):
-        if agent_name == "operations_reviewer":
-            return {
-                "verdict": "approved",
-                "issues": [],
-                "evidence_refs": [
-                    source["source_id"] for source in payload["evidence_catalog"]
-                ],
-                "limitations": payload["manager_report"].get("limitations", []),
-            }
-        if agent_name == "store_manager":
-            by_type = {
-                source["source_type"]: source["source_id"]
-                for source in payload["evidence_catalog"]
-            }
-            return {
-                "executive_summary": "广告效率与补货风险需要优先处理；跨平台价格差异值得复核。",
-                "priorities": [
-                    {
-                        "rank": 1,
-                        "title": "广告效率正在拖累利润",
-                        "why_now": "最新 Amazon 搜索词 Evidence 显示当前广告花费需要复核。",
-                        "evidence_refs": [by_type["amazon_ads_search_term"]],
-                        "platforms": ["amazon"],
-                        "expected_impact": "减少未经验证的广告浪费",
-                        "confidence": "high",
-                        "recommended_owner": "platform_amazon_operator",
-                        "downstream_action": "准备关键词与出价调整提案，不直接写入平台。",
-                        "action_type": "external_change",
-                        "requires_approval": True,
-                        "metric_claim": {"operation": "none", "observation_refs": []},
-                    },
-                    {
-                        "rank": 2,
-                        "title": "3 个畅销 ASIN 面临缺货",
-                        "why_now": "FBA Inventory Evidence 中有 3 个 SKU 的可售库存为零。",
-                        "evidence_refs": [by_type["amazon_fba_inventory"]],
-                        "platforms": ["amazon"],
-                        "expected_impact": "降低断货导致的销售损失",
-                        "confidence": "high",
-                        "recommended_owner": "platform_amazon_operator",
-                        "downstream_action": "生成补货审批草案。",
-                        "action_type": "external_change",
-                        "requires_approval": True,
-                        "metric_claim": {"operation": "none", "observation_refs": []},
-                    },
-                    {
-                        "rank": 3,
-                        "title": "跨平台价格存在差异",
-                        "why_now": "Amazon 与 Shopify 的最新商品 Evidence 需要统一核对定价边界。",
-                        "evidence_refs": [
-                            by_type["amazon_business_report"],
-                            by_type["platform_generic"],
-                        ],
-                        "platforms": ["amazon", "shopify"],
-                        "expected_impact": "减少渠道间利润与转化冲突",
-                        "confidence": "medium",
-                        "recommended_owner": "cross_platform_controller",
-                        "downstream_action": "生成人工复核清单。",
-                        "action_type": "analysis",
-                        "requires_approval": True,
-                        "metric_claim": {"operation": "none", "observation_refs": []},
-                    },
-                ],
-                "risks": [],
-                "limitations": ["Fixture is for browser design QA only."],
-            }
-        if "evidence" in payload:
-            sources = payload["evidence"]
-            source_id = sources[0]["source_id"]
-            platform = payload["target_platform"]
-        else:
-            findings = payload["specialist_findings"].values()
-            source_id = next(
-                finding["evidence_refs"][0]
-                for specialist in findings
-                for finding in specialist["findings"]
-            )
-            platform = "cross_platform"
-        return {
-            "platform": platform,
-            "summary": f"{agent_name} completed an evidence-bound review.",
-            "findings": [
-                {
-                    "title": "Evidence review completed",
-                    "severity": "warning",
-                    "confidence": "high",
-                    "evidence_refs": [source_id],
-                    "recommendation": "Keep the proposed action behind approval.",
-                }
-            ],
-            "data_gaps": [],
-        }
 
 
 def seed(app: RuntimeApplication):
@@ -153,7 +59,7 @@ def seed(app: RuntimeApplication):
             "amazon",
             "amazon_business_report",
             f"business-2026-08-{day}.csv",
-            f"2026-08-{day}T09:00:00+08:00",
+            (datetime.now(timezone.utc) - timedelta(days=22-int(day), minutes=35)).isoformat(),
             (
                 "ASIN,Sessions,Units Ordered,Ordered Product Sales\n"
                 f"B08-A,{sessions},{units},{revenue}\n"
@@ -164,28 +70,28 @@ def seed(app: RuntimeApplication):
         "amazon",
         "amazon_ads_search_term",
         "ads-2026-08-22.csv",
-        "2026-08-22T09:15:00+08:00",
+        (datetime.now(timezone.utc) - timedelta(days=0, minutes=20)).isoformat(),
         b"Campaign Name,Search Term,Spend\nSP-1,kitchen shelf,8400\nSP-1,storage rack,6200\n",
     )
     inventory = imported(
         "amazon",
         "amazon_fba_inventory",
         "inventory-2026-08-22.csv",
-        "2026-08-22T09:30:00+08:00",
+        (datetime.now(timezone.utc) - timedelta(days=0, minutes=5)).isoformat(),
         b"Seller SKU,Fulfillable Quantity\nSKU-1,0\nSKU-2,0\nSKU-3,0\nSKU-4,18\n",
     )
     shopify = imported(
         "shopify",
         "platform_generic",
         "shopify-products-2026-08-22.csv",
-        "2026-08-22T09:35:00+08:00",
+        (datetime.now(timezone.utc) - timedelta(days=0, minutes=0)).isoformat(),
         b"SKU,Price\nSKU-1,29.00\nSKU-2,41.00\n",
     )
     import_ids.extend([ads["id"], inventory["id"], shopify["id"]])
     run = app.agent_runs.request(
         principal,
         "weekly_ops",
-        "Review current profitability, ad efficiency, inventory, and cross-platform pricing.",
+        "AI 能做吗？判断这批经营数据是否适合 AI 分析，保留人工复核。",
         [],
         "preview-run",
         "preview-run-request",

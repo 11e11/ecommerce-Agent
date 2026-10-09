@@ -964,16 +964,16 @@ creates a second marketplace Action.
 Agent graphs are tenant-owned, immutable, versioned DAGs. A published version
 is addressed by its definition hash and cannot be edited or deleted, including
 after it is retired; changes create a new draft version. L7 accepts one
-canonical execution topology: Evidence Analyst and dynamically expanded
-marketplace specialists (Amazon, Shopify, or any input ontology marketplace)
+canonical execution topology: Evidence Analyst computes and interprets a
+deterministic audit first. Dynamically expanded marketplace specialists then
 run in parallel, an optional multi-marketplace Controller follows, then Manager
 and an independent AI Reviewer run sequentially.
 
 The deterministic Router selects Skills from the run objective before the run
 is created, filters them by input marketplace, and saves its result as an
 immutable `skill_route` artifact. No reliable match blocks run creation.
-Evidence Analyst, platform specialists, and the cross-platform Controller can
-use bounded read-only knowledge tools. Manager and Reviewer remain tool-free;
+Platform specialists and the cross-platform Controller can use bounded
+read-only knowledge tools. Only specialists receive platform-scoped ops reads. Manager and Reviewer remain tool-free;
 connector/action tools are not exposed.
 Free-form node prompts are also rejected; each role uses a reviewed
 `instruction_key`. Runs persist their published graph ID/hash and an immutable
@@ -1021,3 +1021,29 @@ review status. The dependency-free provider continues to call the official
 with `store=false` and strict JSON Schema output; specialists are parallelized
 by application code, not model tool calls or the Agents SDK. No live OpenAI-key
 success is claimed when deployment credentials are absent.
+
+### Bounded Specialist harness
+
+The deterministic Skill route includes `effort_tier` and its rationale. Simple
+tasks retain one research pass and answer, without plan/reflection artifacts.
+Standard/deep specialists create a validated plan, execute each step with a
+ReAct tool loop, reflect, and replan at most once. Working memory is owned by
+the harness: at most 12 known entries, and at most 2,000 injected characters.
+Raw facts stay in immutable per-attempt evidence snapshots.
+
+The Analyst's model judgement is one structured call; invalid judgement
+degrades to `unknown` and must be declared in limitations. Only Specialists
+receive four platform-scoped read-only ops tools. The executor pins platform
+and caps pulls at two within the total tool budget. Missing tools are explicit
+gaps. Manager/Reviewer remain tool-free; Controller does not plan or reflect.
+
+Manager includes `evidence_approach` for every platform with matching
+specialist sufficiency. Its payload includes actual plans and cross-platform
+needs. `weekly_ops_report.execution_gate` independently blocks automatic
+Briefing/proposal consumption if the audit is not supported or any specialist
+is not sufficient, even if Reviewer approves the limited report.
+
+Use `opc-ecommerce graph-publish-default --db ...` with an admin runtime key
+to publish the upgraded default contract explicitly. Old run/version bindings
+remain immutable. See `operations/runbook.md` for budgets and environment
+allowlist. Benchmark evaluation changes are excluded from this upgrade.

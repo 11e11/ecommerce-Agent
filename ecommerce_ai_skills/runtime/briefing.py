@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from .agents import PlatformRegistry, WeeklyOpsCouncil
+from .agents import PlatformRegistry, WeeklyOpsCouncil, citation_entries, validate_knowledge_citations
 from .auth import AuthService
 from .errors import RuntimeErrorBase, ValidationError
 from .storage import Database, Principal
@@ -152,18 +152,46 @@ class BriefingService:
                 "evidence_analyst", "platform_specialist", "cross_controller"
             }
         } | {"human_operator"}
+        # Tool evidence discovered during the run is citable by the report;
+        # recover its ids (and each specialist's declared sufficiency) from the
+        # stored artifacts so re-validation matches what execution enforced.
+        extra_source_ids: set[str] = set()
+        sufficiency_by_platform: dict[str, str] = {}
+        final_tasks = {task["id"]: task for task in bundle["tasks"]}
+        candidates = []
+        for artifact in bundle["artifacts"]:
+            task = final_tasks.get(artifact.get("task_id"))
+            if task is None or int(artifact.get("attempt") or 0) != int(task["attempt_count"]):
+                continue
+            content = artifact.get("content")
+            if not isinstance(content, dict):
+                continue
+            for entry in content.get("knowledge_evidence") or []:
+                if isinstance(entry, dict) and entry.get("source_id"):
+                    extra_source_ids.add(str(entry["source_id"]))
+                    candidates.append(entry)
+                    source_platforms[str(entry["source_id"])] = entry["platform"]
+            platform = content.get("platform")
+            if platform and isinstance(content.get("evidence_sufficiency"), dict):
+                sufficiency_by_platform[str(platform)] = str(
+                    content["evidence_sufficiency"].get("level") or "unknown"
+                )
         try:
+            validate_knowledge_citations(citation_entries(reports[0]["content"], manager=True), candidates)
             WeeklyOpsCouncil._validate_refs(
                 reports[0]["content"],
                 source_platforms,
                 manager=True,
                 valid_owners=valid_owners,
+                extra_source_ids=extra_source_ids,
+                sufficiency_by_platform=sufficiency_by_platform,
             )
             WeeklyOpsCouncil._validate_manager_metric_claims(
                 reports[0]["content"], bundle["run"]["evidence"]
             )
             WeeklyOpsCouncil._validate_reviewer(
-                verdicts[0]["content"], source_platforms, reports[0]["content"]
+                verdicts[0]["content"], source_platforms, reports[0]["content"],
+                extra_source_ids=extra_source_ids,
             )
         except (RuntimeErrorBase, KeyError, TypeError, ValueError):
             return None

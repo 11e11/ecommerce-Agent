@@ -5,10 +5,12 @@ import json
 import sqlite3
 import threading
 from email.message import Message
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+import agent_outputs
 from ecommerce_ai_skills.runtime.agent_graphs import default_graph_definition
 from ecommerce_ai_skills.runtime.agents import WeeklyOpsCouncil
 from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
@@ -48,6 +50,11 @@ class GraphProvider:
     def complete(self, *, agent_name, instructions, payload, output_schema, safety_identifier):
         with self.lock:
             self.calls.append((agent_name, payload))
+        # Plan, reflection and the audit judgement are new structures; the
+        # shared fixture owns valid bodies for them.
+        kind = agent_outputs.schema_kind(output_schema)
+        if kind in {"plan", "reflection", "audit"}:
+            return agent_outputs.respond(agent_name, payload, output_schema)
         if agent_name == "store_manager":
             source = payload["evidence_catalog"][0]
             platform = source["platform"]
@@ -59,6 +66,7 @@ class GraphProvider:
                         "title": "Review current performance",
                         "why_now": "The supplied source is current.",
                         "evidence_refs": [source["source_id"]],
+                        "knowledge_citations": agent_outputs.citation_for(payload),
                         "platforms": [platform],
                         "expected_impact": "Clarify the next operator decision.",
                         "confidence": "medium",
@@ -81,7 +89,8 @@ class GraphProvider:
                     }
                 ],
                 "risks": [],
-                "limitations": ["Only supplied evidence was reviewed."],
+                "limitations": agent_outputs.limitation_lines(payload),
+                "evidence_approach": agent_outputs.approach_rows(payload),
             }
         if agent_name == "operations_reviewer":
             refs = [source["source_id"] for source in payload["evidence_catalog"]]
@@ -111,29 +120,16 @@ class GraphProvider:
                 ],
             }
         platform = payload["target_platform"]
-        sources = payload.get("evidence") or []
-        if sources:
-            source_id = sources[0]["source_id"]
-        else:
-            source_id = next(
-                finding["evidence_refs"][0]
-                for value in payload["specialist_findings"].values()
-                for finding in value["findings"]
-            )
-        return {
-            "platform": platform,
-            "summary": f"{agent_name} completed.",
-            "findings": [
-                {
-                    "title": "Evidence-bound finding",
-                    "severity": "info",
-                    "confidence": "medium",
-                    "evidence_refs": [source_id],
-                    "recommendation": "Keep the decision behind operator review.",
-                }
-            ],
-            "data_gaps": [],
-        }
+        base = agent_outputs.respond(agent_name, payload, output_schema)
+        base["platform"] = platform
+        base["summary"] = f"{agent_name} completed."
+        base["findings"][0]["title"] = "Evidence-bound finding"
+        base["findings"][0]["severity"] = "info"
+        base["findings"][0]["recommendation"] = (
+            "Keep the decision behind operator review."
+        )
+        base["data_gaps"] = []
+        return base
 
 
 def test_schema_v16_graph_persistence_rbac_tenant_and_immutable_publish(tmp_path: Path) -> None:
@@ -156,14 +152,11 @@ def test_schema_v16_graph_persistence_rbac_tenant_and_immutable_publish(tmp_path
         node["role"]: node["tool_policy"]
         for node in default_version["definition"]["nodes"]
     }
-    assert node_policies["evidence_analyst"] == {
-        "allowed_tools": [
-            "opc.get_constraints", "opc.read_chapter", "opc.search_knowledge",
-        ],
-        "max_tool_calls": 6,
-    }
-    assert all(node_policies[role]["max_tool_calls"] == 6
-               for role in ("platform_specialist", "cross_controller"))
+    assert node_policies["evidence_analyst"] == {"allowed_tools": [], "max_tool_calls": 0}
+    assert node_policies["platform_specialist"]["max_tool_calls"] == 8
+    assert node_policies["cross_controller"]["max_tool_calls"] == 6
+    assert len(node_policies["platform_specialist"]["allowed_tools"]) == 8
+    assert not any(tool.startswith("opc.ops_") for tool in node_policies["cross_controller"]["allowed_tools"])
     assert all(node_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
                for role in ("manager", "reviewer"))
     with pytest.raises(AuthorizationError):
@@ -513,12 +506,10 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
     task_policies = {
         task["role"]: task["tool_policy"] for task in bundle["tasks"]
     }
-    assert task_policies["evidence_analyst"]["max_tool_calls"] == 6
-    assert set(task_policies["evidence_analyst"]["allowed_tools"]) == {
-        "opc.search_knowledge", "opc.get_constraints", "opc.read_chapter",
-    }
-    assert all(task_policies[role]["max_tool_calls"] == 6
-               for role in ("platform_specialist", "cross_controller"))
+    assert task_policies["evidence_analyst"]["max_tool_calls"] == 0
+    assert task_policies["evidence_analyst"]["allowed_tools"] == []
+    assert task_policies["platform_specialist"]["max_tool_calls"] == 8
+    assert task_policies["cross_controller"]["max_tool_calls"] == 6
     assert all(task_policies[role] == {"allowed_tools": [], "max_tool_calls": 0}
                for role in ("manager", "reviewer"))
     call_names = [name for name, _ in provider.calls]
@@ -550,7 +541,8 @@ def test_graph_run_dynamic_marketplaces_reviewer_and_idempotency(tmp_path: Path)
         "manager_synthesis", "reviewer_verdict", "weekly_ops_report"
     }
     evaluation = app.evaluator.evaluate(owner, run["id"], "eval")
-    assert evaluation["passed"] is True
+    assert evaluation["passed"] is False
+    assert not app.db.agent_run_downstream_eligible(owner.tenant_id, run["id"])
     assert next(
         item for item in evaluation["details"]["checks"] if item["name"] == "reviewer_approval"
     )["passed"] is True
@@ -628,7 +620,8 @@ def test_reviewer_directed_revision_replays_only_affected_nodes(tmp_path: Path, 
     }[target]
     revised_payloads = [payload for name, payload in provider.calls if name == revised_target]
     assert "revision_feedback" in revised_payloads[-1]
-    assert app.evaluator.evaluate(owner, run["id"], f"revise-{target}-eval")["passed"] is True
+    assert app.evaluator.evaluate(owner, run["id"], f"revise-{target}-eval")["passed"] is False
+    assert not app.db.agent_run_downstream_eligible(owner.tenant_id, run["id"])
 
 
 def test_run_fails_closed_when_installed_execution_contract_changes(
@@ -823,7 +816,8 @@ def test_retry_consumes_only_final_reviewer_attempt(
         owner,
         "weekly_ops",
         "优化 Amazon listing title; retry after Reviewer finalization failed.",
-        evidence("amazon"),
+        [{**evidence("amazon")[0], "source_type": "amazon_listing",
+          "observed_at": datetime.now(timezone.utc).isoformat()}],
         "reviewer-retry",
         "reviewer-retry-request",
     )
@@ -863,7 +857,8 @@ def test_retry_before_reviewer_uses_reviewer_task_attempt(
         owner,
         "weekly_ops",
         "优化 Amazon listing title; retry after Manager fails.",
-        evidence("amazon"),
+        [{**evidence("amazon")[0], "source_type": "amazon_listing",
+          "observed_at": datetime.now(timezone.utc).isoformat()}],
         "pre-reviewer-retry",
         "pre-reviewer-retry-request",
     )
@@ -896,6 +891,7 @@ def test_manager_and_reviewer_deterministic_safety_controls() -> None:
         "title": "Unsafe change",
         "why_now": "A source was supplied.",
         "evidence_refs": ["source-a"],
+        "knowledge_citations": [],
         "platforms": ["amazon"],
         "expected_impact": "Unknown",
         "confidence": "low",
@@ -913,11 +909,19 @@ def test_manager_and_reviewer_deterministic_safety_controls() -> None:
                 "risk": "A second source carries risk.",
                 "mitigation": "Review it.",
                 "evidence_refs": ["source-b"],
+                "knowledge_citations": [],
                 "platforms": ["amazon"],
                 "metric_claim": {"operation": "none", "observation_refs": []},
             }
         ],
         "limitations": ["Keep this limitation verbatim."],
+        "evidence_approach": [
+            {
+                "platform": "amazon",
+                "approach": "Reviewed the supplied Amazon source.",
+                "sufficiency": "sufficient",
+            }
+        ],
     }
     with pytest.raises(ExternalServiceError, match="must require human approval"):
         WeeklyOpsCouncil._validate_refs(

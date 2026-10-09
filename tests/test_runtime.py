@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import agent_outputs
 from ecommerce_ai_skills.runtime.actions import ActionService
 from ecommerce_ai_skills.runtime.agents import (
     OpenAIResponsesProvider,
@@ -356,6 +357,11 @@ class _FixtureAgentProvider:
     def complete(self, *, agent_name, instructions, payload, output_schema, safety_identifier):
         with self.lock:
             self.calls.append((agent_name, payload, safety_identifier))
+        # Plan, reflection and the evidence-audit judgement are new structures;
+        # the shared fixture builds valid bodies for them.
+        kind = agent_outputs.schema_kind(output_schema)
+        if kind in {"plan", "reflection", "audit"}:
+            return agent_outputs.respond(agent_name, payload, output_schema)
         if agent_name == "operations_reviewer":
             return {
                 "verdict": "approved",
@@ -384,6 +390,7 @@ class _FixtureAgentProvider:
                         "title": "Review launch campaign efficiency",
                         "why_now": "The supplied weekly ads export shows current spend and sales.",
                         "evidence_refs": [primary_source],
+                        "knowledge_citations": agent_outputs.citation_for(payload),
                         "platforms": [primary_platform],
                         "expected_impact": "Clarify whether budget should be reallocated.",
                         "confidence": "medium",
@@ -399,44 +406,20 @@ class _FixtureAgentProvider:
                         "risk": "The evidence has no order or inventory history.",
                         "mitigation": "Import those exports before making replenishment decisions.",
                         "evidence_refs": [risk_source],
+                        "knowledge_citations": [],
                         "platforms": [risk_platform],
                         "metric_claim": {"operation": "none", "observation_refs": []},
                     }
                 ],
-                "limitations": ["Only two user-supplied sources were available."],
+                "limitations": agent_outputs.limitation_lines(payload),
+                "evidence_approach": agent_outputs.approach_rows(payload),
             }
-        platform = payload["target_platform"]
-        evidence = payload.get("evidence", [])
-        if evidence:
-            candidates = [
-                source for source in evidence
-                if platform == "cross_platform" or source["platform"] in {platform, "cross_platform"}
-            ]
-            source_id = candidates[0]["source_id"]
-        else:
-            source_id = next(
-                finding["evidence_refs"][0]
-                for specialist in payload["specialist_findings"].values()
-                for finding in specialist["findings"]
-            )
-        if self.bad_ref and agent_name == "evidence_analyst":
-            source_id = "unknown-source"
+        base = agent_outputs.respond(agent_name, payload, output_schema)
+        if self.bad_ref:
+            base["findings"][0]["evidence_refs"] = ["unknown-source"]
         if self.bad_platform_ref and agent_name == "platform_amazon_operator":
-            source_id = "shopify-products-2026-08-22"
-        return {
-            "platform": platform,
-            "summary": f"{agent_name} completed an evidence-bound review.",
-            "findings": [
-                {
-                    "title": "Review current campaign",
-                    "severity": "warning",
-                    "confidence": "medium",
-                    "evidence_refs": [source_id],
-                    "recommendation": "Validate profitability before changing bids.",
-                }
-            ],
-            "data_gaps": ["Order history was not supplied."],
-        }
+            base["findings"][0]["evidence_refs"] = ["shopify-products-2026-08-22"]
+        return base
 
 
 def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -> None:
@@ -469,7 +452,12 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
         "operations_reviewer",
     }
     assert all(task["status"] == "completed" for task in bundle["tasks"])
-    assert [artifact["kind"] for artifact in bundle["artifacts"]].count("specialist_finding") == 4
+    kinds = [artifact["kind"] for artifact in bundle["artifacts"]]
+    # Two platform specialists plus the cross controller answer with findings;
+    # the analyst's own artifact is the audit judgement it now owns.
+    assert kinds.count("specialist_finding") == 3
+    assert kinds.count("evidence_audit_judgement") == 1
+    assert kinds.count("evidence_audit_deterministic") == 1
     assert {artifact["kind"] for artifact in bundle["artifacts"]} >= {
         "input_evidence",
         "manager_synthesis",
@@ -481,7 +469,8 @@ def test_weekly_ops_council_persists_parallel_tasks_and_report(tmp_path: Path) -
     ][0]
     assert final_report["priorities"][0]["requires_approval"] is True
     evaluation = app.evaluator.evaluate(principal, run["id"], "request-eval")
-    assert evaluation["passed"] is True and evaluation["score"] == 1.0
+    assert evaluation["passed"] is False
+    assert final_report["execution_gate"]["eligible"] is False
     assert app.evaluator.list(principal, run["id"])[0]["id"] == evaluation["id"]
     assert {call[0] for call in provider.calls} == {
         "evidence_analyst",

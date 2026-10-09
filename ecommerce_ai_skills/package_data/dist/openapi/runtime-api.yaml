@@ -2783,6 +2783,7 @@ components:
       additionalProperties: false
       required: [id, tenant_id, idempotency_key, daily_ops_run_id, agent_run_id, graph_version_id, graph_version_hash, priority_rank, version, version_id, title, rationale, expected_impact, rollback_plan, evidence_refs, metric_observation_ids, operation, payload, payload_hash, content_hash, risk, status, required_approvals, approval_count, created_by, expires_at, created_at, updated_at, decisions, executions, versions, capability_status, capability_reason, capability_block]
       properties:
+        platform: {type: string, nullable: true, readOnly: true, description: Authoritative marketplace from the source Daily Ops schedule}
         id: {type: string, format: uuid}
         tenant_id: {type: string, format: uuid}
         idempotency_key: {type: string, minLength: 1, maxLength: 200}
@@ -3217,7 +3218,7 @@ components:
       properties:
         schema_version: {type: integer, enum: [1]}
         nodes: {type: array, minItems: 5, maxItems: 5, items: {$ref: '#/components/schemas/GraphNode'}}
-        edges: {type: array, minItems: 6, maxItems: 6, items: {$ref: '#/components/schemas/GraphEdge'}}
+        edges: {type: array, minItems: 7, maxItems: 7, items: {$ref: '#/components/schemas/GraphEdge'}}
     GraphNode:
       type: object
       additionalProperties: false
@@ -3250,10 +3251,10 @@ components:
       properties:
         allowed_tools:
           type: array
-          maxItems: 4
+          maxItems: 8
           items:
             type: string
-            enum: [opc.search_knowledge, opc.get_constraints, opc.read_chapter, opc.hybrid_search]
+            enum: [opc.search_knowledge, opc.get_constraints, opc.read_chapter, opc.hybrid_search, opc.ops_briefing, opc.ops_metrics, opc.ops_proposals, opc.ops_evidence]
         max_tool_calls: {type: integer, minimum: 0, maximum: 8}
     ReviewerVerdict:
       type: object
@@ -3313,7 +3314,7 @@ components:
         tenant_id: {type: string, format: uuid}
         run_id: {type: string, format: uuid}
         task_id: {type: string, format: uuid, nullable: true}
-        kind: {type: string, enum: [input_evidence, skill_route, specialist_finding, manager_synthesis, reviewer_verdict, weekly_ops_report]}
+        kind: {type: string, enum: [input_evidence, skill_route, specialist_finding, manager_synthesis, reviewer_verdict, weekly_ops_report, evidence_audit_deterministic, evidence_audit, evidence_audit_judgement, agent_plan, agent_reflection, tool_evidence_snapshot]}
         attempt: {type: integer, minimum: 0}
         content:
           oneOf:

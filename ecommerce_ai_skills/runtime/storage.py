@@ -5222,7 +5222,17 @@ class Database:
                    WHERE a.tenant_id=? AND a.id=?""",
                 (tenant_id, run_id),
             ).fetchone()
-        return bool(row and row["eligible"])
+            report = conn.execute(
+                """SELECT ar.content_json FROM agent_artifacts ar JOIN agent_runs a
+                   ON a.tenant_id=ar.tenant_id AND a.id=ar.run_id
+                   WHERE ar.tenant_id=? AND ar.run_id=? AND ar.kind='weekly_ops_report'
+                     AND ar.attempt=a.attempt_count ORDER BY ar.rowid DESC LIMIT 1""",
+                (tenant_id, run_id),
+            ).fetchone()
+        gate = json.loads(report["content_json"]).get("execution_gate") if report else None
+        # Legacy reports keep their original eligibility semantics.
+        evidence_eligible = gate is None or (isinstance(gate, dict) and gate.get("eligible") is True)
+        return bool(row and row["eligible"] and evidence_eligible)
 
     def bind_legacy_agent_run_graph(
         self,
@@ -5482,6 +5492,82 @@ class Database:
                     now,
                 ),
             )
+
+    def record_agent_event(
+        self,
+        tenant_id: str,
+        run_id: str,
+        agent_name: str,
+        event_type: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Append one bounded harness event while a task is running.
+
+        The harness records its plan, each execution round, the reflection and
+        any refused tool call here. Events carry short summaries and digests --
+        enough to replay what the agent decided, never a second evidence store.
+        """
+        now = utc_now()
+        with self.transaction() as conn:
+            task = conn.execute(
+                """SELECT id, attempt_count FROM agent_tasks
+                   WHERE tenant_id=? AND run_id=? AND agent_name=?""",
+                (tenant_id, run_id, agent_name),
+            ).fetchone()
+            conn.execute(
+                """INSERT INTO agent_events(
+                   id,tenant_id,run_id,task_id,event_type,payload_json,created_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    self._id(), tenant_id, run_id,
+                    task["id"] if task else None, event_type,
+                    json.dumps(
+                        {
+                            "agent_name": agent_name,
+                            "attempt": int(task["attempt_count"]) if task else 0,
+                            **(payload or {}),
+                        },
+                        ensure_ascii=False, sort_keys=True,
+                    ),
+                    now,
+                ),
+            )
+
+    def record_agent_artifact(
+        self,
+        tenant_id: str,
+        run_id: str,
+        agent_name: str,
+        kind: str,
+        content: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Persist a mid-task artifact (plan, reflection, evidence audit).
+
+        Unlike ``complete_agent_task`` this leaves the task running, so the
+        harness can publish a plan before executing it and still fail later
+        without rewriting history.
+        """
+        now = utc_now()
+        with self.transaction() as conn:
+            task = conn.execute(
+                """SELECT id, attempt_count FROM agent_tasks
+                   WHERE tenant_id=? AND run_id=? AND agent_name=?""",
+                (tenant_id, run_id, agent_name),
+            ).fetchone()
+            artifact_id = self._id()
+            conn.execute(
+                """INSERT INTO agent_artifacts(
+                   id,tenant_id,run_id,task_id,kind,attempt,content_json,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    artifact_id, tenant_id, run_id,
+                    task["id"] if task else None, kind,
+                    int(task["attempt_count"]) if task else 0,
+                    json.dumps(content, ensure_ascii=False, sort_keys=True), now,
+                ),
+            )
+        return {"id": artifact_id, "kind": kind}
 
     def complete_agent_run(
         self,

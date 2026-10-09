@@ -388,6 +388,9 @@ def main() -> int:
     api.add_argument("--host", default="127.0.0.1")
     api.add_argument("--port", type=int, default=8787)
     api.add_argument("--allow-public", action="store_true", help="allow non-loopback bind; use only behind TLS/authenticated proxy")
+    publish_graph = sub.add_parser("graph-publish-default", help="explicitly publish the current default Agent graph (admin)")
+    publish_graph.add_argument("--db", required=True)
+    publish_graph.add_argument("--api-key", help="admin API key; defaults to OPC_RUNTIME_API_KEY")
     worker = sub.add_parser("worker", help="execute durable queued jobs")
     worker.add_argument("--db", required=True)
     worker.add_argument("--once", action="store_true")
@@ -485,6 +488,21 @@ def main() -> int:
     rag_index.add_argument("--dist", default=None, help="path to a dist/ corpus (default packaged dist)")
     rag_index.add_argument("--cache", default=None, help="embedding cache path (default ~/.cache/opc-rag)")
     args = parser.parse_args()
+    if args.command == "graph-publish-default":
+        from .runtime.auth import AuthService
+        from .runtime.agent_graphs import AgentGraphService
+        from .runtime.errors import RuntimeErrorBase
+        from uuid import uuid4
+        try:
+            db = Database(args.db)
+            auth = AuthService(db)
+            principal = auth.authenticate(args.api_key or os.environ.get("OPC_RUNTIME_API_KEY", ""))
+            result = AgentGraphService(db, auth).publish_default(principal, str(uuid4()))
+            print(json.dumps({"id": result["id"], "version": result["version"], "status": result["status"]}))
+            return 0
+        except RuntimeErrorBase as exc:
+            print(json.dumps({"status": "failed", "error": str(exc)}))
+            return 1
     if args.command == "mcp":
         module = _load_mcp_module()
         dist = Path(args.dist).resolve() if args.dist else _package_data() / "dist"

@@ -24,6 +24,40 @@ def _terms(query: str) -> set[str]:
     return terms
 
 
+def _effort_tier(
+    selected: list[str], marketplace_platforms: list[str]
+) -> tuple[str, str]:
+    """Deterministic effort tier driving role topology and per-task budgets.
+
+    The tier is computed from the routing result alone -- never by a model --
+    so the same objective always gets the same编制 and the tier can be compared
+    against outcomes later. Rules are deliberately conservative (prefer a
+    heavier tier when in doubt): under-provisioning a complex objective costs
+    more than one extra retrieval round.
+    """
+    multi_intent = len(selected) > 1
+    if (
+        len(marketplace_platforms) >= 3
+        or len(selected) >= 3
+        or ("ecom-applicability" in selected and multi_intent)
+    ):
+        return (
+            "deep",
+            f"{len(marketplace_platforms)} marketplace(s), {len(selected)} skill(s), "
+            f"multi_intent={multi_intent}",
+        )
+    if len(marketplace_platforms) == 1 and len(selected) == 1:
+        return (
+            "simple",
+            f"single marketplace, single skill ({selected[0]})",
+        )
+    return (
+        "standard",
+        f"{len(marketplace_platforms)} marketplace(s), {len(selected)} skill(s), "
+        f"multi_intent={multi_intent}",
+    )
+
+
 class SkillRouter:
     """Use the installed manifest triggers and constraint coverage, as MCP does."""
 
@@ -99,6 +133,10 @@ class SkillRouter:
             if not matched:
                 raise ValidationError(f"Skill Router found no selected skill for {platform}")
             by_platform[platform] = matched
+        marketplace_platforms = [platform for platform in platforms if platform != "cross_platform"]
+        effort_tier, effort_rationale = _effort_tier(selected, marketplace_platforms)
         return {"query": objective, "skills": selected, "by_platform": by_platform,
                 "scores": {skill: ranked[skill] for skill in selected},
-                "constraint_coverage": coverage}
+                "constraint_coverage": coverage,
+                "effort_tier": effort_tier,
+                "effort_rationale": effort_rationale}

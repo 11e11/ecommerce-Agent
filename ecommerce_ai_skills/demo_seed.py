@@ -25,6 +25,42 @@ class DemoSeedProvider:
         return "demo_seed", "demo-seed-v1"
 
     def complete(
+        self, *, agent_name: str, instructions: str, payload: dict[str, Any],
+        output_schema: dict[str, Any], safety_identifier: str,
+    ) -> dict[str, Any]:
+        required = set(output_schema["required"])
+        if "adequacy" in required:
+            audit = payload["deterministic_audit"]
+            return {"adequacy": audit["adequacy"], "why": "Explicit Demo evidence audit.",
+                    "ranked_gaps": [], "would_change_conclusion": [],
+                    "comparability_warnings": audit["comparability"]["blockers"], "applicability_note": "Demo only."}
+        if "objective_restatement" in required:
+            return {"objective_restatement": payload["objective"], "steps": [{"step_id": 1,
+                    "question": "Review supplied Demo observations", "tools": [], "gap_id": "",
+                    "expected_evidence": "Demo source ids", "done_when": "source reviewed"}],
+                    "needs_from_other_platforms": [], "assumptions": [], "would_abstain_if": []}
+        if "sufficiency" in required:
+            return {"sufficiency": "sufficient", "covered_steps": [step["step_id"] for step in payload["plan"]["steps"]],
+                    "uncovered_steps": [], "why_insufficient": "", "replan": {"needed": False, "changes": []}, "abandoned": []}
+        result = self._complete(agent_name=agent_name, instructions=instructions, payload=payload,
+                                output_schema=output_schema, safety_identifier=safety_identifier)
+        for key in ("findings", "priorities", "risks"):
+            for item in result.get(key, []):
+                item.setdefault("knowledge_citations", [])
+        if "findings" in required:
+            result["evidence_sufficiency"] = payload.get("evidence_sufficiency", {"level": "sufficient", "reason": "Demo source review"})
+            result["plan_executed"] = payload.get("plan_executed", [])
+        if "priorities" in required:
+            levels = {row["platform"]: row["evidence_sufficiency"]["level"] for row in payload["specialist_findings"].values()}
+            result["evidence_approach"] = [{"platform": platform, "approach": "Review explicit Demo evidence",
+                                           "sufficiency": levels.get(platform, "unknown")} for platform in payload["platforms"]]
+            result["limitations"].extend(f"{platform}: {level}" for platform, level in levels.items() if level != "sufficient")
+            adequacy = (payload.get("evidence_audit") or {}).get("adequacy")
+            if adequacy and adequacy != "supported":
+                result["limitations"].append("Evidence audit: " + adequacy)
+        return result
+
+    def _complete(
         self,
         *,
         agent_name: str,
@@ -353,7 +389,7 @@ def seed_demo_database(path: str | Path) -> dict[str, Any]:
         owner,
         name="Demo Amazon daily pulse",
         platform="amazon",
-        objective="优化 Amazon listing title using Demo business evidence for this local business day.",
+        objective="AI 能做吗？判断这批经营数据是否适合 AI 分析，保留人工复核。",
         timezone_name="Asia/Shanghai",
         local_time=(today + timedelta(minutes=36)).strftime("%H:%M"),
         graph_version_id=str(graph_version["id"]),
@@ -440,7 +476,7 @@ def seed_demo_database(path: str | Path) -> dict[str, Any]:
     run = app.agent_runs.request(
         owner,
         "weekly_ops",
-        "优化 Amazon listing title using Demo marketplace evidence.",
+        "AI 能做吗？判断这批经营数据是否适合 AI 分析，保留人工复核。",
         [],
         "demo-weekly-ops",
         "demo-weekly-ops-request",
@@ -471,7 +507,7 @@ def seed_demo_database(path: str | Path) -> dict[str, Any]:
     schedule = app.schedules.create(
         owner,
         name="Demo Amazon weekly review",
-        objective="优化 Amazon listing title using Demo business evidence.",
+        objective="AI 能做吗？判断这批经营数据是否适合 AI 分析，保留人工复核。",
         evidence_import_ids=[],
         evidence_selectors=[
             {"platform": "amazon", "report_type": "amazon_business_report"}

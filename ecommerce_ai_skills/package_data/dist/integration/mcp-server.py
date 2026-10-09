@@ -45,6 +45,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import urllib.parse
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import sys
@@ -456,17 +458,103 @@ class OPCServer:
             {
                 "name": name,
                 "description": description,
-                "inputSchema": {"type": "object", "properties": {}},
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "description": (
+                                "Marketplace id to filter by (for example amazon or "
+                                "shopify). The runtime pins this argument for its own "
+                                "agents so a platform specialist can never read another "
+                                "marketplace's numbers."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum rows to return (1-50).", "minimum": 1, "maximum": 50,
+                        },
+                        "period_days": {
+                            "type": "integer",
+                            "description": "Only return observations from the last N days.", "minimum": 1, "maximum": 365,
+                        },
+                    },
+                },
             }
             for name, _path, description in self.OPS_TOOLS
         ]
 
-    def _call_ops_tool(self, name: str) -> str:
+    OPS_LIST_KEYS = ("observations", "proposals", "imports", "items")
+
+    def _filter_ops_payload(self, payload: Any, *, platform: str | None,
+                            limit: int, period_days: int | None = None) -> Any:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=period_days) if period_days else None
+
+        def keep(row: Any) -> bool:
+            if not isinstance(row, dict):
+                return False
+            row_platform = row.get("platform")
+            if isinstance(row_platform, dict):
+                row_platform = row_platform.get("id")
+            if platform and row_platform != platform:
+                return False
+            if cutoff:
+                stamp = row.get("period_end") or row.get("observed_at") or row.get("created_at")
+                try:
+                    observed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                    if observed.tzinfo is None or observed < cutoff:
+                        return False
+                except ValueError:
+                    return False
+            return True
+
+        if isinstance(payload, list):
+            return [row for row in payload if keep(row)][:limit]
+        if not isinstance(payload, dict):
+            return {}
+        # Return only recognised row envelopes. Unknown metadata can contain
+        # tenant-wide summaries; omit it rather than leak another platform.
+        return {key: [row for row in payload[key] if keep(row)][:limit]
+                for key in self.OPS_LIST_KEYS if isinstance(payload.get(key), list)}
+
+    def _call_ops_tool(self, name: str, args: dict | None = None) -> str:
+        arguments = args or {}
+        platform = arguments.get("platform")
+        if platform is not None and (not isinstance(platform, str) or platform not in
+                {row["id"] for row in self._ontology.get("platforms", [])}):
+            return "ERROR: invalid platform filter"
+        for key, default, maximum in (("limit", 20, 50), ("period_days", None, 365)):
+            value = arguments.get(key, default)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum):
+                return "ERROR: invalid " + key
+        limit = arguments.get("limit", 20)
+        period_days = arguments.get("period_days")
         path = next(p for n, p, _d in self.OPS_TOOLS if n == name)
+        if platform and name in {"opc.ops_briefing", "opc.ops_metrics"}:
+            path += "?platform=" + urllib.parse.quote(platform, safe="")
         payload, error = self.runtime.fetch(path)
         if error:
-            return error
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+            return "ERROR: read-only runtime tool unavailable"
+        if name == "opc.ops_briefing":
+            # The briefing may embed cross-platform Agent reports. Expose only
+            # its platform-scoped metric and evidence summaries to specialists.
+            identity = (payload.get("platform") or {}).get("id") if isinstance(payload, dict) else None
+            if platform and identity != platform:
+                return "ERROR: runtime returned a different platform"
+            filtered = {"platform": identity, "evidence": payload.get("evidence", {}),
+                        "metrics": payload.get("metrics", [])[:limit]}
+            if period_days:
+                # Aggregate values refer to the runtime's original window. Only
+                # return dated observations when a narrower window is requested.
+                filtered["metrics"] = [{**{key: row[key] for key in
+                    ("metric_key", "unit", "currency", "time_grain", "dimensions") if key in row},
+                    "series": [point for point in row.get("series", [])
+                    if self._filter_ops_payload([{**point, "platform": identity}], platform=identity,
+                                                limit=1, period_days=period_days)]}
+                    for row in filtered["metrics"]]
+        else:
+            filtered = self._filter_ops_payload(payload, platform=platform, limit=limit, period_days=period_days)
+        return json.dumps({"platform_filter": platform, "data": filtered}, ensure_ascii=False)
 
     def _hybrid_search(self, query: str, top_k: Any = None) -> str:
         """Chunk-level hybrid retrieval; errors are text for the calling agent."""
@@ -526,7 +614,7 @@ class OPCServer:
         elif name == "opc.hybrid_search":
             return self._hybrid_search(args.get("query", ""), args.get("top_k"))
         elif any(name == n for n, _p, _d in self.OPS_TOOLS):
-            return self._call_ops_tool(name)
+            return self._call_ops_tool(name, args)
         return f"Unknown tool: {name}"
 
     @staticmethod

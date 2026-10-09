@@ -23,7 +23,7 @@ KNOWN_ROLES = {
 }
 KNOWN_EXPANSIONS = {"singleton", "each_input_marketplace", "multiple_marketplaces"}
 STRICT_TOOL_POLICY = {"allowed_tools": [], "max_tool_calls": 0}
-# Read-only knowledge tools only. Write-class and ops tools must never appear
+# Read-only knowledge and tenant data tools. Write tools never appear
 # here: the graph contract is the second guard behind the executor's own
 # whitelist check, and neither of them can reach the approval-gated write path.
 # opc.hybrid_search is read-only retrieval too (BM25 + vector fusion over the
@@ -33,6 +33,13 @@ RESEARCH_TOOL_WHITELIST = {
     "opc.get_constraints",
     "opc.read_chapter",
     "opc.hybrid_search",
+    # Read-only tenant data. The executor pins these to the calling role's
+    # platform, so a platform specialist cannot ask for another marketplace's
+    # numbers even though the tool itself accepts a platform filter.
+    "opc.ops_briefing",
+    "opc.ops_metrics",
+    "opc.ops_proposals",
+    "opc.ops_evidence",
 }
 TOOL_FREE_ROLES = {"manager", "reviewer"}
 MAX_TOOL_CALLS_PER_TASK = 8
@@ -61,6 +68,8 @@ def _validate_tool_policy(role: str, policy: Any) -> dict[str, Any]:
             "allowed_tools + max_tool_calls"
         )
     tools = policy["allowed_tools"]
+    if role != "platform_specialist" and isinstance(tools, list) and any(str(tool).startswith("opc.ops_") for tool in tools):
+        raise ValidationError("read-only ops tools are reserved for platform specialists")
     if (
         not isinstance(tools, list)
         or not tools
@@ -99,14 +108,7 @@ def default_graph_definition() -> dict[str, Any]:
                 "optional": False,
                 "skill_ids": ["ecom-applicability"],
                 "instruction_key": KNOWN_INSTRUCTION_KEYS["evidence_analyst"],
-                "tool_policy": {
-                    "allowed_tools": [
-                        "opc.get_constraints",
-                        "opc.read_chapter",
-                        "opc.search_knowledge",
-                    ],
-                    "max_tool_calls": 6,
-                },
+                "tool_policy": dict(STRICT_TOOL_POLICY),
             },
             {
                 "key": "platform_specialist",
@@ -115,9 +117,21 @@ def default_graph_definition() -> dict[str, Any]:
                 "optional": False,
                 "skill_ids": [],
                 "instruction_key": KNOWN_INSTRUCTION_KEYS["platform_specialist"],
+                # The contract grants the ceiling; the effort tier decides what a
+                # given task is actually offered (simple tasks get the three
+                # chapter-level knowledge tools only).
                 "tool_policy": {
-                    "allowed_tools": ["opc.get_constraints", "opc.read_chapter", "opc.search_knowledge"],
-                    "max_tool_calls": 6,
+                    "allowed_tools": [
+                        "opc.get_constraints",
+                        "opc.read_chapter",
+                        "opc.search_knowledge",
+                        "opc.hybrid_search",
+                        "opc.ops_briefing",
+                        "opc.ops_metrics",
+                        "opc.ops_proposals",
+                        "opc.ops_evidence",
+                    ],
+                    "max_tool_calls": 8,
                 },
             },
             {
@@ -128,7 +142,12 @@ def default_graph_definition() -> dict[str, Any]:
                 "skill_ids": ["ecom-applicability", "ecom-listing"],
                 "instruction_key": KNOWN_INSTRUCTION_KEYS["cross_controller"],
                 "tool_policy": {
-                    "allowed_tools": ["opc.get_constraints", "opc.read_chapter", "opc.search_knowledge"],
+                    "allowed_tools": [
+                        "opc.get_constraints",
+                        "opc.read_chapter",
+                        "opc.search_knowledge",
+                        "opc.hybrid_search",
+                    ],
                     "max_tool_calls": 6,
                 },
             },
@@ -152,6 +171,7 @@ def default_graph_definition() -> dict[str, Any]:
             },
         ],
         "edges": [
+            {"from": "evidence_analyst", "to": "platform_specialist"},
             {"from": "evidence_analyst", "to": "cross_controller"},
             {"from": "platform_specialist", "to": "cross_controller"},
             {"from": "evidence_analyst", "to": "manager"},
@@ -185,6 +205,11 @@ class AgentGraphService:
             Path(__file__).resolve().with_name("agents.py"),
             Path(__file__).resolve().with_name("graph_engine.py"),
             Path(__file__).resolve().with_name("skill_router.py"),
+            Path(__file__).resolve().with_name("harness.py"),
+            Path(__file__).resolve().with_name("evidence_audit.py"),
+            Path(__file__).resolve().with_name("evidence_policy.py"),
+            Path(__file__).resolve().with_name("knowledge_client.py"),
+            dist_root / "integration" / "mcp-server.py",
             dist_root / "ontology.json",
             *sorted((dist_root / "skills").glob("*/manifest.yaml")),
         ]
@@ -311,6 +336,7 @@ class AgentGraphService:
         evidence_key = by_role["evidence_analyst"]
         platform_key = by_role["platform_specialist"]
         expected_edges = {
+            (evidence_key, platform_key),
             (evidence_key, manager_key),
             (platform_key, manager_key),
             (manager_key, reviewer_key),
@@ -450,6 +476,89 @@ class AgentGraphService:
                 ensured_version_id,
                 "succeeded",
                 {"graph_id": graph_id, "definition_hash": definition_hash},
+            )
+        return self.get_published(principal, graph_id)
+
+    def publish_default(self, principal: Principal, request_id: str) -> dict[str, Any]:
+        """Explicitly publish the current default definition for this tenant.
+
+        ``ensure_default`` deliberately refuses to swap a live tenant's graph: a
+        changed execution contract raises ``ConflictError`` until an admin acts.
+        This is that action -- idempotent, retires the previously published
+        version, and leaves every completed run bound to the version it ran on.
+        """
+        self.auth.require(principal, "admin")
+        definition, definition_hash, execution_contract_hash = self.validate_definition(
+            default_graph_definition()
+        )
+        now = utc_now()
+        version_id: str | None = None
+        with self.db.transaction() as conn:
+            graph = conn.execute(
+                "SELECT * FROM agent_graphs WHERE tenant_id=? AND name=?",
+                (principal.tenant_id, self.DEFAULT_NAME),
+            ).fetchone()
+            if graph is None:
+                graph_id = self.db._id()
+                conn.execute(
+                    """INSERT INTO agent_graphs(
+                       id,tenant_id,name,created_by,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (graph_id, principal.tenant_id, self.DEFAULT_NAME, principal.user_id, now, now),
+                )
+            else:
+                graph_id = str(graph["id"])
+            existing = conn.execute(
+                """SELECT * FROM agent_graph_versions
+                   WHERE tenant_id=? AND graph_id=? AND definition_hash=?""",
+                (principal.tenant_id, graph_id, definition_hash),
+            ).fetchone()
+            if existing is not None and existing["status"] == "published":
+                pass  # already the published version: idempotent no-op
+            elif existing is not None and existing["status"] == "retired":
+                raise ConflictError("this default contract was retired; publish a new graph definition")
+            elif existing is not None and existing["status"] == "draft":
+                conn.execute(
+                    """UPDATE agent_graph_versions SET status='retired',retired_at=?
+                       WHERE tenant_id=? AND graph_id=? AND status='published'""",
+                    (now, principal.tenant_id, graph_id),
+                )
+                conn.execute(
+                    """UPDATE agent_graph_versions SET status='published',published_at=?
+                       WHERE tenant_id=? AND id=?""",
+                    (now, principal.tenant_id, existing["id"]),
+                )
+                version_id = str(existing["id"])
+            else:
+                version_id = self.db._id()
+                version_number = int(
+                    conn.execute(
+                        "SELECT COALESCE(MAX(version),0)+1 n FROM agent_graph_versions WHERE tenant_id=? AND graph_id=?",
+                        (principal.tenant_id, graph_id),
+                    ).fetchone()["n"]
+                )
+                conn.execute(
+                    """UPDATE agent_graph_versions SET status='retired',retired_at=?
+                       WHERE tenant_id=? AND graph_id=? AND status='published'""",
+                    (now, principal.tenant_id, graph_id),
+                )
+                conn.execute(
+                    """INSERT INTO agent_graph_versions(
+                       id,tenant_id,graph_id,version,definition_json,definition_hash,
+                       execution_contract_hash,status,created_by,created_at,published_at
+                       ) VALUES(?,?,?,?,?,?,?,'published',?,?,?)""",
+                    (
+                        version_id, principal.tenant_id, graph_id, version_number,
+                        json.dumps(definition, ensure_ascii=False, sort_keys=True),
+                        definition_hash, execution_contract_hash,
+                        principal.user_id, now, now,
+                    ),
+                )
+        if version_id is not None:
+            self.db.append_audit(
+                principal.tenant_id, principal.user_id, request_id,
+                "agent_graph.default.publish", "agent_graph_version", version_id,
+                "succeeded", {"graph_id": graph_id, "definition_hash": definition_hash},
             )
         return self.get_published(principal, graph_id)
 

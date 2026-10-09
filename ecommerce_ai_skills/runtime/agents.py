@@ -12,10 +12,12 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,6 +27,9 @@ from ecommerce_ai_skills import USER_AGENT
 
 from .auth import AuthService
 from .agent_graphs import AgentGraphService, STRICT_TOOL_POLICY
+from . import harness
+from .evidence_audit import audit_evidence
+
 from .errors import (
     ConflictError,
     ConnectorNotConfiguredError,
@@ -44,10 +49,49 @@ from .skill_router import SkillRouter
 from .storage import Database, Principal
 
 
+_CALL_DEADLINE: ContextVar[float | None] = ContextVar("agent_call_deadline", default=None)
+_USAGE_SINK: ContextVar[Any] = ContextVar("agent_usage_sink", default=None)
+
+
+def _call_timeout(configured: float) -> float:
+    deadline = _CALL_DEADLINE.get()
+    remaining = deadline - time.monotonic() if deadline is not None else configured
+    if remaining <= 0:
+        raise TimeoutError("specialist wall clock deadline reached")
+    return min(configured, remaining)
+
+
+def _record_usage(response: dict[str, Any]) -> None:
+    sink = _USAGE_SINK.get()
+    usage = response.get("usage")
+    if sink is not None and isinstance(usage, dict):
+        # Persist only counters, never provider response bodies or credentials.
+        counters = {key: value for key, value in usage.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)}
+        sink(counters)
+
+
+@contextmanager
+def _call_context(memory: Any, sink: Any):
+    deadline = _CALL_DEADLINE.set(time.monotonic() + memory.seconds_left if memory else None)
+    usage = _USAGE_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _CALL_DEADLINE.reset(deadline)
+        _USAGE_SINK.reset(usage)
+
 SPECIALIST_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["platform", "summary", "findings", "data_gaps"],
+    "required": [
+        "platform",
+        "summary",
+        "findings",
+        "data_gaps",
+        "evidence_sufficiency",
+        "plan_executed",
+    ],
     "properties": {
         "platform": {"type": "string"},
         "summary": {"type": "string"},
@@ -62,6 +106,7 @@ SPECIALIST_SCHEMA: dict[str, Any] = {
                     "severity",
                     "confidence",
                     "evidence_refs",
+                    "knowledge_citations",
                     "recommendation",
                 ],
                 "properties": {
@@ -69,11 +114,52 @@ SPECIALIST_SCHEMA: dict[str, Any] = {
                     "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
                     "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    # Tool-derived facts are only citable with the span they came
+                    # from: the id alone proves existence, not attribution.
+                    "knowledge_citations": {
+                        "type": "array",
+                        "maxItems": 6,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["source_id", "quote"],
+                            "properties": {
+                                "source_id": {"type": "string"},
+                                "quote": {"type": "string"},
+                            },
+                        },
+                    },
                     "recommendation": {"type": "string"},
                 },
             },
         },
         "data_gaps": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+        "evidence_sufficiency": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["level", "reason"],
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "enum": ["sufficient", "partial", "insufficient", "unknown"],
+                },
+                "reason": {"type": "string"},
+            },
+        },
+        "plan_executed": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["step_id", "outcome", "note"],
+                "properties": {
+                    "step_id": {"type": "integer", "minimum": 1},
+                    "outcome": {"type": "string", "enum": ["done", "partial", "skipped"]},
+                    "note": {"type": "string"},
+                },
+            },
+        },
     },
 }
 
@@ -81,7 +167,13 @@ SPECIALIST_SCHEMA: dict[str, Any] = {
 MANAGER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["executive_summary", "priorities", "risks", "limitations"],
+    "required": [
+        "executive_summary",
+        "priorities",
+        "risks",
+        "limitations",
+        "evidence_approach",
+    ],
     "properties": {
         "executive_summary": {"type": "string"},
         "priorities": {
@@ -95,6 +187,7 @@ MANAGER_SCHEMA: dict[str, Any] = {
                     "title",
                     "why_now",
                     "evidence_refs",
+                    "knowledge_citations",
                     "platforms",
                     "expected_impact",
                     "confidence",
@@ -109,6 +202,19 @@ MANAGER_SCHEMA: dict[str, Any] = {
                     "title": {"type": "string"},
                     "why_now": {"type": "string"},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "knowledge_citations": {
+                        "type": "array",
+                        "maxItems": 6,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["source_id", "quote"],
+                            "properties": {
+                                "source_id": {"type": "string"},
+                                "quote": {"type": "string"},
+                            },
+                        },
+                    },
                     "platforms": {"type": "array", "minItems": 1, "items": {"type": "string"}},
                     "expected_impact": {"type": "string"},
                     "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
@@ -143,12 +249,26 @@ MANAGER_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "additionalProperties": False,
                 "required": [
-                    "risk", "mitigation", "evidence_refs", "platforms", "metric_claim"
+                    "risk", "mitigation", "evidence_refs", "knowledge_citations",
+                    "platforms", "metric_claim"
                 ],
                 "properties": {
                     "risk": {"type": "string"},
                     "mitigation": {"type": "string"},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "knowledge_citations": {
+                        "type": "array",
+                        "maxItems": 6,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["source_id", "quote"],
+                            "properties": {
+                                "source_id": {"type": "string"},
+                                "quote": {"type": "string"},
+                            },
+                        },
+                    },
                     "platforms": {"type": "array", "minItems": 1, "items": {"type": "string"}},
                     "metric_claim": {
                         "type": "object",
@@ -169,6 +289,25 @@ MANAGER_SCHEMA: dict[str, Any] = {
             },
         },
         "limitations": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+        # User-visible "how we went about it": one row per marketplace carrying
+        # that specialist's declared approach and its evidence sufficiency.
+        "evidence_approach": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["platform", "approach", "sufficiency"],
+                "properties": {
+                    "platform": {"type": "string"},
+                    "approach": {"type": "string"},
+                    "sufficiency": {
+                        "type": "string",
+                        "enum": ["sufficient", "partial", "insufficient", "unknown"],
+                    },
+                },
+            },
+        },
     },
 }
 
@@ -212,6 +351,367 @@ REVIEWER_SCHEMA: dict[str, Any] = {
 }
 
 
+EVIDENCE_AUDIT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "adequacy",
+        "why",
+        "ranked_gaps",
+        "would_change_conclusion",
+        "comparability_warnings",
+        "applicability_note",
+    ],
+    "properties": {
+        "adequacy": {
+            "type": "string",
+            "enum": ["supported", "partial", "insufficient", "unknown"],
+        },
+        "why": {"type": "string"},
+        "ranked_gaps": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["gap_id", "impact", "risk_if_ignored"],
+                "properties": {
+                    "gap_id": {"type": "string"},
+                    "impact": {"type": "string"},
+                    "risk_if_ignored": {"type": "string"},
+                },
+            },
+        },
+        "would_change_conclusion": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {"type": "string"},
+        },
+        "comparability_warnings": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {"type": "string"},
+        },
+        "applicability_note": {"type": "string"},
+    },
+}
+
+
+# --- tool evidence: retrieved knowledge and tenant data become citable ------
+
+# Bounded excerpt kept for the prompt; the fuller text stays in the artifact so
+# a quote can be verified as a substring without shipping whole chapters.
+TOOL_EVIDENCE_TEXT_CHARS = 1_200
+TOOL_EVIDENCE_EXCERPT_CHARS = 400
+MAX_KNOWLEDGE_EVIDENCE_PER_TASK = 6
+MAX_KNOWLEDGE_EVIDENCE_PER_RUN = 24
+# Keys the orchestrator attaches to a stored result after validation. They are
+# bookkeeping about where evidence came from, not fields the model authored, so
+# re-validators (briefing, evaluator) must not treat them as schema drift.
+BOOKKEEPING_KEYS = frozenset({"knowledge_evidence", "execution_gate"})
+OPS_SOURCE_TYPES = {
+    "opc.ops_briefing": "ops_briefing",
+    "opc.ops_metrics": "ops_metric",
+    "opc.ops_proposals": "ops_proposal",
+    "opc.ops_evidence": "ops_import",
+}
+
+
+def normalise_tool_source_id(raw: Any, *, prefix: str) -> str | None:
+    """Build a source id inside the evidence id charset ``[A-Za-z0-9._:-]``.
+
+    Chunk ids carry ``#position``; ``#`` is not in the charset every evidence
+    validator enforces, so it folds to ``.`` here rather than pushing a second
+    charset through the whole validation stack.
+    """
+    text = re.sub(r"[^A-Za-z0-9._:-]+", ".", str(raw or "")).strip(".")
+    if not text:
+        return None
+    limit = 100 - len(prefix)
+    return f"{prefix}{text[:limit]}"
+
+
+def _json_or_none(text: str) -> Any | None:
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _text_of(value: Any, limit: int = TOOL_EVIDENCE_TEXT_CHARS) -> str:
+    if isinstance(value, str):
+        rendered = value
+    else:
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return " ".join(rendered.split())[:limit]
+
+
+def tool_evidence_from_notes(
+    notes: list[dict[str, Any]], *, platform: str | None, limit: int
+) -> list[dict[str, Any]]:
+    """Project verified tool results into citable evidence entries.
+
+    Only ids that actually appear in a tool result become citable, so a model
+    cannot invent a citation: unknown ids are rejected downstream. ``platform``
+    is informational here -- the executor already pinned the tool arguments --
+    because tool-fetched evidence is shared knowledge/tenant context.
+    """
+    if limit <= 0:
+        return []
+    entries: dict[str, dict[str, Any]] = {}
+    for note in notes:
+        if isinstance(note.get("verified_evidence"), list):
+            for entry in note["verified_evidence"]:
+                entries.setdefault(entry["source_id"], entry)
+            continue
+        tool = str(note.get("tool") or "")
+        result = note.get("result")
+        if not isinstance(result, str) or result.startswith("ERROR:"):
+            continue
+        arguments = note.get("arguments") if isinstance(note.get("arguments"), dict) else {}
+        query = str(arguments.get("query") or "")
+        if tool == "opc.hybrid_search":
+            payload = _json_or_none(result)
+            rows = payload.get("results") if isinstance(payload, dict) else None
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                source_id = normalise_tool_source_id(row.get("chunk_id"), prefix="knowledge:")
+                if not source_id:
+                    continue
+                entries.setdefault(
+                    source_id,
+                    _tool_evidence_entry(
+                        source_id=source_id,
+                        source_type="knowledge_chunk",
+                        kind="chunk",
+                        heading=row.get("heading"),
+                        chapter_id=row.get("chapter_id"),
+                        text=row.get("excerpt"),
+                        excerpt=row.get("excerpt"),
+                        tool=tool,
+                        query=query,
+                        score=row.get("score"),
+                    ),
+                )
+            continue
+        if tool == "opc.read_chapter":
+            source_id = normalise_tool_source_id(arguments.get("chapter_id"), prefix="knowledge:")
+            if source_id:
+                entries.setdefault(
+                    source_id,
+                    _tool_evidence_entry(
+                        source_id=source_id,
+                        source_type="knowledge_chapter",
+                        kind="chapter",
+                        heading=None,
+                        chapter_id=arguments.get("chapter_id"),
+                        text=result,
+                        excerpt=result,
+                        tool=tool,
+                        query=query,
+                    ),
+                )
+            continue
+        if tool == "opc.get_constraints":
+            payload = _json_or_none(result)
+            for row in payload if isinstance(payload, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                source_id = normalise_tool_source_id(row.get("id"), prefix="knowledge:")
+                if not source_id:
+                    continue
+                statement = row.get("statement") if isinstance(row.get("statement"), dict) else {}
+                text = " ".join(
+                    str(part)
+                    for part in (
+                        row.get("id"),
+                        row.get("attribute"),
+                        row.get("value"),
+                        row.get("unit"),
+                        statement.get("zh"),
+                        statement.get("en"),
+                    )
+                    if part
+                )
+                entries.setdefault(
+                    source_id,
+                    _tool_evidence_entry(
+                        source_id=source_id,
+                        source_type="knowledge_constraint",
+                        kind="constraint",
+                        heading=row.get("attribute"),
+                        chapter_id=None,
+                        text=text,
+                        excerpt=text,
+                        tool=tool,
+                        query=query,
+                    ),
+                )
+            continue
+        if tool == "opc.search_knowledge":
+            payload = _json_or_none(result)
+            for row in payload if isinstance(payload, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                source_id = normalise_tool_source_id(row.get("id"), prefix="knowledge:")
+                if not source_id:
+                    continue
+                excerpts = row.get("excerpts") if isinstance(row.get("excerpts"), list) else []
+                first = excerpts[0] if excerpts and isinstance(excerpts[0], dict) else {}
+                text = str(first.get("text") or row.get("summary") or row.get("title") or "")
+                entries.setdefault(
+                    source_id,
+                    _tool_evidence_entry(
+                        source_id=source_id,
+                        source_type="knowledge_chapter",
+                        kind="chapter",
+                        heading=row.get("title"),
+                        chapter_id=row.get("id"),
+                        text=text,
+                        excerpt=text,
+                        tool=tool,
+                        query=query,
+                    ),
+                )
+            continue
+        if tool in OPS_SOURCE_TYPES:
+            payload = _json_or_none(result)
+            if isinstance(payload, dict) and "data" in payload:
+                payload = payload.get("data")
+            kind = OPS_SOURCE_TYPES[tool]
+            rows: list[Any]
+            if isinstance(payload, list):
+                rows = payload
+            elif isinstance(payload, dict):
+                rows = [row for key in ("observations", "proposals", "imports", "items", "metrics")
+                        for row in (payload.get(key) or []) if isinstance(row, dict)]
+                if not rows and payload.get("platform"):
+                    rows = [payload]
+            else:
+                rows = []
+            for position, row in enumerate(rows):
+                identity = row.get("id") if isinstance(row, dict) else None
+                source_id = normalise_tool_source_id(
+                    (str(identity) + ":" if identity else "") + hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16],
+                    prefix="ops:" + tool.removeprefix("opc.ops_") + ":"
+                )
+                if not source_id:
+                    continue
+                entry = (
+                    _tool_evidence_entry(
+                        source_id=source_id, source_type=kind, kind=kind,
+                        heading=row.get("metric_key") or row.get("filename") or row.get("title"),
+                        chapter_id=None, text=_text_of(row), excerpt=_text_of(row, TOOL_EVIDENCE_EXCERPT_CHARS),
+                        tool=tool, query=query,
+                    )
+                )
+                entry["platform"] = platform or "cross_platform"
+                entry["data"]["fetched_at"] = note.get("fetched_at") or entry["observed_at"]
+                entry["data"]["digest"] = hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                entries.setdefault(source_id, entry)
+    return list(entries.values())[:limit]
+
+
+def _tool_evidence_entry(
+    *,
+    source_id: str,
+    source_type: str,
+    kind: str,
+    heading: Any,
+    chapter_id: Any,
+    text: Any,
+    excerpt: Any,
+    tool: str,
+    query: str,
+    score: Any = None,
+) -> dict[str, Any]:
+    full = _text_of(text)
+    short = _text_of(excerpt if excerpt is not None else text, TOOL_EVIDENCE_EXCERPT_CHARS)
+    return {
+        "source_id": source_id,
+        "platform": "cross_platform",
+        "source_type": source_type,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "kind": kind,
+            "chapter_id": chapter_id,
+            "heading": str(heading) if heading else None,
+            "text": full,
+            "excerpt": short,
+            "score": score,
+            "query": query,
+            "tool": tool,
+        },
+    }
+
+
+def _collapse(text: str) -> str:
+    return " ".join(str(text).split())
+
+
+def validate_knowledge_citations(
+    entries: list[dict[str, Any]], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Verify ``{source_id, quote}`` citations and return the evidence actually used.
+
+    Two checks, both deterministic: the id must be one the tools really
+    returned, and the quoted span must occur in that evidence's text. This is
+    the cheap, regression-stable half of attribution; the claim-level
+    faithfulness check stays as the semantic half.
+    """
+    by_id = {entry["source_id"]: entry for entry in candidates}
+    used: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        for citation in entry.get("knowledge_citations") or []:
+            if not isinstance(citation, dict):
+                continue
+            source_id = str(citation.get("source_id") or "")
+            quote = _collapse(citation.get("quote") or "")
+            candidate = by_id.get(source_id)
+            if candidate is None:
+                raise ExternalServiceError(
+                    f"cited unknown tool evidence: {source_id or '<empty>'}"
+                )
+            if not quote:
+                raise ExternalServiceError(f"citation for {source_id} carried no quote")
+            haystack = _collapse(candidate["data"].get("text") or "")
+            if quote not in haystack:
+                raise ExternalServiceError(
+                    f"citation quote is not present in {source_id}: {quote[:80]}"
+                )
+            used[source_id] = candidate
+    return list(used.values())
+
+
+def citation_entries(result: dict[str, Any], *, manager: bool) -> list[dict[str, Any]]:
+    """Collect the citation blocks of a specialist or manager output."""
+    entries: list[dict[str, Any]] = []
+    collections = (
+        [*result.get("priorities", []), *result.get("risks", [])]
+        if manager
+        else list(result.get("findings", []))
+    )
+    for item in collections:
+        if isinstance(item, dict):
+            entries.append(item)
+    return entries
+
+
+def merge_tool_evidence(
+    findings: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Union of every task's tool evidence, used to validate downstream citations."""
+    merged: dict[str, dict[str, Any]] = {}
+    for result in findings.values():
+        if not isinstance(result, dict):
+            continue
+        for entry in result.get("knowledge_evidence") or []:
+            if isinstance(entry, dict) and entry.get("source_id"):
+                merged.setdefault(str(entry["source_id"]), entry)
+    return list(merged.values())
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     name: str
@@ -228,10 +728,10 @@ class AgentSpec:
 EVIDENCE_ANALYST = AgentSpec(
     "evidence_analyst",
     ("ecom-applicability",),
-    "Audit evidence completeness and freshness across every supplied platform. Separate supported "
-    "findings from data gaps. Do not invent market, sales, price, benchmark, or policy facts. "
+    "Interpret deterministic_audit only: judge adequacy, rank its existing gap ids, and explain "
+    "what evidence would change the conclusion. Do not write business findings or erase computed gaps. "
     "Keep Metric Observation currencies, dimensions, and time grains in separate series. "
-    'Set the output platform field to exactly "cross_platform".',
+    "Return the evidence audit judgement schema.",
     "cross_platform",
 )
 
@@ -257,7 +757,11 @@ MANAGER = AgentSpec(
     "with metric_claim. metric_claim rules: operation \"observe\" requires exactly one observation_ref; "
     "operation \"compare\" or \"aggregate\" requires at least two observation_refs; operation \"none\" "
     "requires an empty observation_refs list, and observation_refs must enumerate exactly the cited "
-    "metric_observation evidence_refs. Every L7 priority requires human approval before downstream use.",
+    "metric_observation evidence_refs. Every L7 priority requires human approval before downstream use. "
+    "Include evidence_approach exactly once for each marketplace: describe the specialist's actual "
+    "plan and preserve its evidence_sufficiency level. Mention each non-sufficient platform in "
+    "limitations, and explicitly include evidence_audit.adequacy there when it is not supported. "
+    "Carry cross-platform needs from specialist_plans into the report's approach or limitations.",
     "cross_platform",
 )
 
@@ -391,7 +895,7 @@ def _run_responses_research(
             method="POST",
         )
         try:
-            with transport(request, timeout=timeout_seconds) as response:
+            with transport(request, timeout=_call_timeout(timeout_seconds)) as response:
                 status = getattr(response, "status", 200)
                 body = response.read()
         except HTTPError as exc:
@@ -411,6 +915,7 @@ def _run_responses_research(
             raise ExternalServiceError(f"{label} returned HTTP {status}")
         try:
             result = json.loads(body.decode("utf-8"))
+            _record_usage(result)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ExternalServiceError(f"{label} returned invalid JSON") from exc
         if result.get("status") != "completed":
@@ -707,6 +1212,7 @@ class OpenAIResponsesProvider:
             }
         try:
             result = json.loads(body.decode("utf-8"))
+            _record_usage(result)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return {
                 "ok": False,
@@ -801,7 +1307,7 @@ class OpenAIResponsesProvider:
             method="POST",
         )
         try:
-            with self.transport(request, timeout=self.timeout_seconds) as response:
+            with self.transport(request, timeout=_call_timeout(self.timeout_seconds)) as response:
                 status = getattr(response, "status", 200)
                 body = response.read()
         except HTTPError as exc:
@@ -814,6 +1320,7 @@ class OpenAIResponsesProvider:
             raise ExternalServiceError(f"OpenAI returned HTTP {status}")
         try:
             result = json.loads(body.decode("utf-8"))
+            _record_usage(result)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ExternalServiceError("OpenAI returned invalid JSON") from exc
         if result.get("status") != "completed":
@@ -956,7 +1463,7 @@ class DeepSeekResponsesProvider:
             method="POST",
         )
         try:
-            with self.transport(request, timeout=self.timeout_seconds) as response:
+            with self.transport(request, timeout=_call_timeout(self.timeout_seconds)) as response:
                 status = getattr(response, "status", 200)
                 body = response.read()
         except HTTPError as exc:
@@ -982,6 +1489,7 @@ class DeepSeekResponsesProvider:
             )
         try:
             result = json.loads(body.decode("utf-8"))
+            _record_usage(result)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ExternalServiceError(
                 f"{self.provider_label} returned invalid JSON"
@@ -1166,7 +1674,7 @@ class AnthropicMessagesProvider:
             "metadata": {"user_id": safety_identifier},
         }
         try:
-            status, raw, _ = self._post(body, api_key, self.timeout_seconds)
+            status, raw, _ = self._post(body, api_key, _call_timeout(self.timeout_seconds))
         except HTTPError as exc:
             raise ExternalServiceError(f"Anthropic returned HTTP {exc.code}") from exc
         except URLError as exc:
@@ -1177,6 +1685,7 @@ class AnthropicMessagesProvider:
             raise ExternalServiceError(f"Anthropic returned HTTP {status}")
         try:
             result = json.loads(raw.decode("utf-8"))
+            _record_usage(result)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ExternalServiceError("Anthropic returned invalid JSON") from exc
 
@@ -1230,7 +1739,7 @@ class AnthropicMessagesProvider:
                 "metadata": {"user_id": safety_identifier},
             }
             try:
-                status, raw, _ = self._post(body, api_key, self.timeout_seconds)
+                status, raw, _ = self._post(body, api_key, _call_timeout(self.timeout_seconds))
             except HTTPError as exc:
                 raise ExternalServiceError(f"Anthropic returned HTTP {exc.code}") from exc
             except URLError as exc:
@@ -1241,6 +1750,7 @@ class AnthropicMessagesProvider:
                 raise ExternalServiceError(f"Anthropic returned HTTP {status}")
             try:
                 result = json.loads(raw.decode("utf-8"))
+                _record_usage(result)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ExternalServiceError("Anthropic returned invalid JSON") from exc
             if result.get("stop_reason") == "max_tokens":
@@ -1382,6 +1892,69 @@ class WeeklyOpsCouncil:
                               "description": "How many chunks to return (default 5)"},
                 },
                 "required": ["query"],
+            },
+        },
+        # Read-only tenant data. The platform argument is deliberately absent
+        # from the model-facing schema: the executor pins it to this role's
+        # platform, so a model cannot ask for another marketplace even by
+        # constructing the argument itself.
+        {
+            "name": "opc.ops_briefing",
+            "description": (
+                "Read this tenant's current operating briefing for the platform "
+                "you are responsible for: executive summary, priorities, risks, "
+                "agent statuses, and what awaits human approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum rows (1-50)."},
+                },
+            },
+        },
+        {
+            "name": "opc.ops_metrics",
+            "description": (
+                "Read real metric observations (sales, conversion, ad spend, "
+                "stockouts) for the platform you are responsible for. Each row "
+                "carries its provenance and its unit/currency/time grain."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum rows (1-50)."},
+                    "period_days": {
+                        "type": "integer",
+                        "description": "Only rows from the last N days.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "opc.ops_proposals",
+            "description": (
+                "Read proposed actions and their approval state for this tenant. "
+                "READ ONLY: approving is a human action and is not exposed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum rows (1-50)."},
+                },
+            },
+        },
+        {
+            "name": "opc.ops_evidence",
+            "description": (
+                "Read which evidence files have been imported for this tenant "
+                "(source file, platform, row counts, observation window) before "
+                "concluding that a question cannot be answered."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum rows (1-50)."},
+                },
             },
         },
     ]
@@ -1698,7 +2271,12 @@ class WeeklyOpsCouncil:
 
     def _task_specs(
         self, run: dict[str, Any], definition: dict[str, Any]
-    ) -> tuple[list[AgentSpec], AgentSpec | None, AgentSpec, AgentSpec]:
+    ) -> tuple[AgentSpec, list[AgentSpec], AgentSpec | None, AgentSpec, AgentSpec]:
+        """Build (audit, specialists, cross, manager, reviewer) for one run.
+
+        The evidence analyst is returned separately because it now runs as a
+        serial prerequisite: the specialists' plans consume its audit.
+        """
         specialist_node = self._node_for_role(definition, "platform_specialist")
         route = self.db.get_agent_route(run["tenant_id"], run["id"])
         marketplace_specs = []
@@ -1719,7 +2297,6 @@ class WeeklyOpsCouncil:
             EVIDENCE_ANALYST.platform,
             self._spec_tool_policy(evidence_node),
         )
-        initial = [evidence_spec, *marketplace_specs]
         cross = None
         if cross_node is not None and len(marketplace_specs) > 1:
             cross = AgentSpec(
@@ -1730,10 +2307,16 @@ class WeeklyOpsCouncil:
                 self._spec_tool_policy(cross_node),
             )
         manager_skills = tuple(
-            sorted({skill for spec in [*initial, *([cross] if cross else [])] for skill in spec.skill_ids})
+            sorted(
+                {
+                    skill
+                    for spec in [evidence_spec, *marketplace_specs, *([cross] if cross else [])]
+                    for skill in spec.skill_ids
+                }
+            )
         )
         manager = AgentSpec(MANAGER.name, manager_skills, MANAGER.instructions, MANAGER.platform)
-        return initial, cross, manager, REVIEWER
+        return evidence_spec, marketplace_specs, cross, manager, REVIEWER
 
     def _task_record(
         self, spec: AgentSpec, definition: dict[str, Any]
@@ -1770,13 +2353,25 @@ class WeeklyOpsCouncil:
         manager: bool,
         expected_platform: str | None = None,
         valid_owners: set[str] | None = None,
+        extra_source_ids: set[str] | None = None,
+        sufficiency_by_platform: dict[str, str] | None = None,
     ) -> None:
+        # Tool-derived evidence rediscovered during this task extends what a role
+        # may cite; it never shrinks the run's own evidence contract.
+        allowed = set(source_platforms) | set(extra_source_ids or ())
         required_top = (
-            {"executive_summary", "priorities", "risks", "limitations"}
+            {"executive_summary", "priorities", "risks", "limitations", "evidence_approach"}
             if manager
-            else {"platform", "summary", "findings", "data_gaps"}
+            else {
+                "platform",
+                "summary",
+                "findings",
+                "data_gaps",
+                "evidence_sufficiency",
+                "plan_executed",
+            }
         )
-        if set(result) != required_top:
+        if {key for key in result if key not in BOOKKEEPING_KEYS} != required_top:
             raise ExternalServiceError("agent output fields did not match the required schema")
         valid_platforms = set(source_platforms.values()) | {"cross_platform"}
         if not manager:
@@ -1785,6 +2380,23 @@ class WeeklyOpsCouncil:
                 raise ExternalServiceError(
                     f"agent output platform was {platform!r}, expected {expected_platform!r}"
                 )
+            sufficiency = result.get("evidence_sufficiency")
+            if (
+                not isinstance(sufficiency, dict)
+                or sufficiency.get("level")
+                not in {"sufficient", "partial", "insufficient", "unknown"}
+                or not isinstance(sufficiency.get("reason"), str)
+                or not sufficiency.get("reason", "").strip()
+            ):
+                raise ExternalServiceError("agent output carried an invalid evidence_sufficiency")
+            executed = result.get("plan_executed")
+            if not isinstance(executed, list) or any(
+                not isinstance(step, dict)
+                or set(step) != {"step_id", "outcome", "note"}
+                or step.get("outcome") not in {"done", "partial", "skipped"}
+                for step in executed
+            ):
+                raise ExternalServiceError("agent output carried an invalid plan_executed list")
         collections = [result["priorities"], result["risks"]] if manager else [result["findings"]]
         if manager:
             priorities = result["priorities"]
@@ -1800,6 +2412,45 @@ class WeeklyOpsCouncil:
                 or any(not isinstance(item, str) or not item.strip() for item in limitations)
             ):
                 raise ExternalServiceError("manager must preserve at least one explicit limitation")
+            approach = result.get("evidence_approach")
+            if not isinstance(approach, list) or not approach:
+                raise ExternalServiceError("manager omitted the evidence_approach section")
+            for row in approach:
+                if (
+                    not isinstance(row, dict)
+                    or set(row) != {"platform", "approach", "sufficiency"}
+                    or row.get("sufficiency")
+                    not in {"sufficient", "partial", "insufficient", "unknown"}
+                    or not str(row.get("approach") or "").strip()
+                ):
+                    raise ExternalServiceError("manager evidence_approach rows are malformed")
+            marketplace_platforms = {
+                platform
+                for platform in source_platforms.values()
+                if platform != "cross_platform"
+            }
+            covered = {str(row.get("platform")) for row in approach}
+            missing_platforms = sorted(marketplace_platforms - covered)
+            if missing_platforms:
+                raise ExternalServiceError(
+                    "manager evidence_approach omitted marketplaces: "
+                    + ", ".join(missing_platforms)
+                )
+            # A specialist that could not ground its analysis must surface that
+            # as a limitation; otherwise the report would look fully supported.
+            lowered = " ".join(str(item).lower() for item in limitations)
+            for platform, level in (sufficiency_by_platform or {}).items():
+                if platform == "cross_platform" or level == "sufficient":
+                    continue
+                if platform.lower() not in lowered:
+                    raise ExternalServiceError(
+                        f"manager limitations must declare the {platform} evidence gap"
+                    )
+            for platform, level in (sufficiency_by_platform or {}).items():
+                if platform != "cross_platform" and any(row["platform"] == platform and row["sufficiency"] != level for row in approach):
+                    raise ExternalServiceError("manager evidence_approach must match specialist sufficiency")
+            if len(covered) != len(approach) or covered != marketplace_platforms:
+                raise ExternalServiceError("manager evidence_approach must cover each marketplace exactly once")
         for collection in collections:
             if not isinstance(collection, list):
                 raise ExternalServiceError("agent output collection was not an array")
@@ -1807,11 +2458,22 @@ class WeeklyOpsCouncil:
                 refs = item.get("evidence_refs") if isinstance(item, dict) else None
                 if not isinstance(refs, list) or not refs:
                     raise ExternalServiceError("agent output omitted required evidence_refs")
-                unknown = sorted(set(refs) - set(source_platforms))
+                unknown = sorted(set(refs) - allowed)
                 if unknown:
                     raise ExternalServiceError(
                         f"agent output cited unknown evidence: {', '.join(unknown)}"
                     )
+                citations = item.get("knowledge_citations") if isinstance(item, dict) else None
+                if not isinstance(citations, list):
+                    raise ExternalServiceError("agent output omitted knowledge_citations")
+                for citation in citations:
+                    if (
+                        not isinstance(citation, dict)
+                        or set(citation) != {"source_id", "quote"}
+                        or not str(citation.get("source_id") or "").strip()
+                        or not str(citation.get("quote") or "").strip()
+                    ):
+                        raise ExternalServiceError("agent output carried a malformed citation")
                 if manager:
                     platforms = item.get("platforms") if isinstance(item, dict) else None
                     if not isinstance(platforms, list) or not platforms:
@@ -1821,7 +2483,7 @@ class WeeklyOpsCouncil:
                         raise ExternalServiceError(
                             f"manager output cited unknown platforms: {', '.join(unknown_platforms)}"
                         )
-                    cited_platforms = {source_platforms[ref] for ref in refs}
+                    cited_platforms = {source_platforms[ref] for ref in refs if ref in source_platforms}
                     unsupported = sorted(
                         platform for platform in platforms
                         if platform != "cross_platform"
@@ -1854,7 +2516,8 @@ class WeeklyOpsCouncil:
                 elif expected_platform != "cross_platform":
                     wrong_platform = sorted(
                         ref for ref in refs
-                        if source_platforms[ref] not in {expected_platform, "cross_platform"}
+                        if ref in source_platforms
+                        and source_platforms[ref] not in {expected_platform, "cross_platform"}
                     )
                     if wrong_platform:
                         raise ExternalServiceError(
@@ -2008,7 +2671,12 @@ class WeeklyOpsCouncil:
         result: dict[str, Any],
         source_platforms: dict[str, str],
         manager_report: dict[str, Any],
+        *,
+        extra_source_ids: set[str] | None = None,
     ) -> None:
+        # Tool-discovered evidence cited by the report is legitimate; the
+        # reviewer sees the same allowance the manager was validated against.
+        allowed_refs = set(source_platforms) | set(extra_source_ids or ())
         if set(result) != {"verdict", "issues", "evidence_refs", "limitations", "revision_target", "revision_platform"}:
             raise ExternalServiceError("reviewer output fields did not match the required schema")
         if result.get("verdict") not in {"approved", "revision_required", "rejected"}:
@@ -2032,7 +2700,7 @@ class WeeklyOpsCouncil:
             or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs)
         ):
             raise ExternalServiceError("reviewer omitted required evidence_refs")
-        unknown = sorted(set(evidence_refs) - set(source_platforms))
+        unknown = sorted(set(evidence_refs) - allowed_refs)
         if unknown:
             raise ExternalServiceError(
                 f"reviewer cited unknown evidence: {', '.join(unknown)}"
@@ -2072,7 +2740,7 @@ class WeeklyOpsCouncil:
                 or any(not isinstance(platform, str) or not platform.strip() for platform in platforms)
             ):
                 raise ExternalServiceError("reviewer issue omitted evidence_refs or platforms")
-            unknown_refs = sorted(set(refs) - set(source_platforms))
+            unknown_refs = sorted(set(refs) - allowed_refs)
             unknown_platforms = sorted(set(platforms) - valid_platforms)
             if unknown_refs:
                 raise ExternalServiceError(
@@ -2123,6 +2791,85 @@ class WeeklyOpsCouncil:
                     "approved reviewer omitted a manager limitation"
                 )
 
+    def _tier_for_run(self, run: dict[str, Any]) -> str:
+        """Read the deterministic effort tier captured at routing time."""
+        try:
+            route = self.db.get_agent_route(run["tenant_id"], run["id"]) or {}
+        except Exception:  # pragma: no cover - routing record is best-effort here
+            return harness.DEFAULT_TIER
+        tier = route.get("effort_tier") if isinstance(route, dict) else None
+        return tier if tier in harness.TIER_BUDGETS else harness.DEFAULT_TIER
+
+    def _effort_rationale(self, run: dict[str, Any]) -> str:
+        try:
+            route = self.db.get_agent_route(run["tenant_id"], run["id"]) or {}
+        except Exception:  # pragma: no cover
+            return ""
+        return str(route.get("effort_rationale") or "") if isinstance(route, dict) else ""
+
+    @staticmethod
+    def _audit_slice(audit: Any, platform: str) -> dict[str, Any] | None:
+        """Show a role only the audit rows it is entitled to see."""
+        if not isinstance(audit, dict):
+            return None
+        if platform == "cross_platform":
+            return audit
+        return {
+            "adequacy": audit.get("adequacy"),
+            "comparability": audit.get("comparability"),
+            "platforms": [
+                row for row in audit.get("platforms") or [] if row.get("platform") == platform
+            ],
+            "gaps": [
+                gap for gap in audit.get("gaps") or [] if gap.get("platform") == platform
+            ],
+            "notes": audit.get("notes") or [],
+        }
+
+    @staticmethod
+    def _audit_from_findings(findings: Any) -> dict[str, Any]:
+        """Recover the deterministic audit produced by the evidence analyst."""
+        if not isinstance(findings, dict):
+            return {}
+        analyst = findings.get(EVIDENCE_ANALYST.name)
+        if isinstance(analyst, dict) and isinstance(analyst.get("deterministic_audit"), dict):
+            return analyst["deterministic_audit"]
+        return {}
+
+    def _harness_recorder(self, run: dict[str, Any], agent_name: str) -> Any:
+        """Bind the durable trace tables to one task without leaking the database."""
+        db = self.db
+        tenant_id = run.get("tenant_id")
+        run_id = run.get("id")
+
+        class _Recorder:
+            def artifact(self, kind: str, content: dict[str, Any]) -> None:
+                db.record_agent_artifact(tenant_id, run_id, agent_name, kind, content)
+
+            def event(self, event_type: str, payload: dict[str, Any]) -> None:
+                db.record_agent_event(
+                    tenant_id, run_id, agent_name, event_type, payload=payload
+                )
+
+        return _Recorder()
+
+    def _complete_recorded(self, spec: AgentSpec, run: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        with _call_context(None, lambda usage: self.db.record_agent_event(
+            run["tenant_id"], run["id"], spec.name, "task.usage", payload=usage
+        )):
+            return self.provider.complete(**kwargs)
+
+    def _latest_plans(self, run: dict[str, Any]) -> dict[str, Any]:
+        bundle = self.db.get_agent_run_bundle(run["tenant_id"], run["id"])
+        current = {task["id"]: task for task in bundle["tasks"]}
+        plans = {}
+        for artifact in bundle["artifacts"]:
+            task = current.get(artifact.get("task_id"))
+            if (artifact["kind"] == "agent_plan" and task is not None
+                    and int(artifact["attempt"]) == int(task["attempt_count"])):
+                plans[artifact["content"]["platform"]] = artifact["content"]["plan"]
+        return plans
+
     def _run_specialist(
         self,
         spec: AgentSpec,
@@ -2130,7 +2877,14 @@ class WeeklyOpsCouncil:
         safety_identifier: str,
         knowledge_client: KnowledgeToolClient | None = None,
         revision_feedback: list[dict[str, Any]] | None = None,
+        *,
+        audit: Any = None,
+        tier: str | None = None,
+        findings: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Run one platform analysis through the bounded specialist harness."""
+        budget = harness.budget_for(tier or self._tier_for_run(run))
+        budget = replace(budget, max_tool_calls=min(budget.max_tool_calls, int(spec.tool_policy.get("max_tool_calls") or 0)))
         evidence = (
             run["evidence"]
             if spec.platform == "cross_platform"
@@ -2139,26 +2893,105 @@ class WeeklyOpsCouncil:
                 if source.get("platform") in {spec.platform, "cross_platform"}
             ]
         )
-        payload: dict[str, Any] = {
+        base_payload: dict[str, Any] = {
             "workflow": run["workflow"],
             "objective": run["objective"],
             "target_platform": spec.platform,
             "assigned_skills": list(spec.skill_ids),
             "skill_contracts": self.skill_loader.load(spec.skill_ids),
             "evidence": evidence,
+            "evidence_audit": self._audit_slice(audit, spec.platform),
+            "effort_tier": budget.name,
         }
+        if spec.platform == "cross_platform" and findings:
+            base_payload["specialist_findings"] = findings
         if revision_feedback is not None:
-            payload["revision_feedback"] = revision_feedback
-        research_notes = self._research_notes(spec, run, safety_identifier, knowledge_client)
-        if research_notes:
-            payload["research_notes"] = research_notes
-        return self.provider.complete(
-            agent_name=spec.name,
-            instructions=spec.instructions,
-            payload=payload,
-            output_schema=SPECIALIST_SCHEMA,
-            safety_identifier=safety_identifier,
+            base_payload["revision_feedback"] = revision_feedback
+        offered = harness.allowed_tools_for(
+            budget.name, tuple(spec.tool_policy.get("allowed_tools") or ())
         )
+        base_payload["available_tools"] = list(offered)
+        gap_ids = [str(gap.get("id")) for gap in (self._audit_slice(audit, spec.platform) or {}).get("gaps") or []]
+        state: dict[str, Any] = {"candidates": []}
+
+        def plan_call(payload: dict[str, Any], memory: harness.WorkingMemory) -> dict[str, Any]:
+            with _call_context(memory, _USAGE_SINK.get()):
+                return self.provider.complete(
+                    agent_name=spec.name,
+                    instructions=spec.instructions + harness.PLAN_INSTRUCTIONS,
+                    payload=payload,
+                    output_schema=harness.PLAN_SCHEMA,
+                    safety_identifier=safety_identifier,
+                )
+
+        def research_call(payload: dict[str, Any], memory: harness.WorkingMemory) -> list[dict[str, Any]]:
+            notes = self._research_notes(
+                spec, run, safety_identifier, knowledge_client,
+                memory=memory, offered=offered, plan=payload.get("plan"), step=payload.get("step"),
+            )
+            candidates = tool_evidence_from_notes(
+                notes, platform=spec.platform, limit=MAX_KNOWLEDGE_EVIDENCE_PER_TASK
+            )
+            known = {entry["source_id"] for entry in state["candidates"]}
+            fresh = [entry for entry in candidates if entry["source_id"] not in known]
+            state["candidates"].extend(fresh)
+            memory.note_evidence(fresh)
+            return notes
+
+        def reflect_call(payload: dict[str, Any], memory: harness.WorkingMemory) -> dict[str, Any]:
+            with _call_context(memory, _USAGE_SINK.get()):
+                return self.provider.complete(
+                    agent_name=spec.name,
+                    instructions=spec.instructions + harness.REFLECTION_INSTRUCTIONS,
+                    payload=payload,
+                    output_schema=harness.REFLECTION_SCHEMA,
+                    safety_identifier=safety_identifier,
+                )
+
+        def final_call(payload: dict[str, Any], memory: harness.WorkingMemory) -> dict[str, Any]:
+            enriched = dict(payload)
+            enriched["knowledge_candidates"] = [
+                {
+                    "source_id": entry["source_id"],
+                    "kind": entry["data"].get("kind"),
+                    "heading": entry["data"].get("heading"),
+                    "excerpt": entry["data"].get("excerpt"),
+                }
+                for entry in state["candidates"][:MAX_KNOWLEDGE_EVIDENCE_PER_TASK]
+            ]
+            with _call_context(memory, _USAGE_SINK.get()):
+                return self.provider.complete(
+                    agent_name=spec.name,
+                    instructions=spec.instructions,
+                    payload=enriched,
+                    output_schema=SPECIALIST_SCHEMA,
+                    safety_identifier=safety_identifier,
+                )
+
+        with _call_context(None, lambda usage: self.db.record_agent_event(
+            run["tenant_id"], run["id"], spec.name, "task.usage", payload=usage
+        )):
+            outcome = harness.run_specialist_harness(
+                budget=budget,
+                allowed_tools=offered,
+                gap_ids=gap_ids,
+                platforms=self._marketplace_platforms(run),
+                base_payload=base_payload,
+                plan_call=plan_call,
+                research_call=research_call,
+                reflect_call=reflect_call,
+                final_call=final_call,
+                recorder=self._harness_recorder(run, spec.name),
+                tier_rationale=self._effort_rationale(run),
+                initial_gaps=(self._audit_slice(audit, spec.platform) or {}).get("gaps") or (),
+            )
+        return {
+            "result": outcome.result,
+            "candidates": state["candidates"],
+            "plan": outcome.plan,
+            "warnings": outcome.warnings,
+            "budget": budget,
+        }
 
     def _research_notes(
         self,
@@ -2166,44 +2999,95 @@ class WeeklyOpsCouncil:
         run: dict[str, Any],
         safety_identifier: str,
         knowledge_client: KnowledgeToolClient | None,
+        *,
+        memory: Any = None,
+        offered: tuple[str, ...] | None = None,
+        plan: dict[str, Any] | None = None,
+        step: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Run the bounded research phase for a tool-enabled spec.
+        """Run one bounded research round for a tool-enabled spec.
 
         Capability-negotiated twice: the provider must implement research() and
-        a knowledge client must be available — either missing and the spec runs
-        the strict single-shot path. The executor enforces the graph whitelist
-        again at call time (defense in depth against a rogue model request),
-        audits every invocation, and truncates results before they reach a
-        prompt.
+        a knowledge client must be available -- either missing and the round
+        returns no notes. The executor enforces the graph whitelist again at
+        call time, pins the platform argument for tenant-data tools (a model
+        that could choose `platform` could read another marketplace), applies
+        the per-task data-pull quota, refuses an immediately repeated call, and
+        audits every invocation.
         """
         research = getattr(self.provider, "research", None)
         if research is None or knowledge_client is None:
+            # Strict zero-tool roles may intentionally analyse supplied evidence.
+            if memory is not None and step and step.get("tools"):
+                memory.gaps.append({"id": "tool-unavailable", "what": "research capability or MCP client unavailable"})
             return []
-        allowed = set(spec.tool_policy.get("allowed_tools") or [])
-        max_tool_calls = int(spec.tool_policy.get("max_tool_calls") or 0)
+        allowed = set(offered if offered is not None else spec.tool_policy.get("allowed_tools") or [])
+        if step is not None:
+            allowed &= set(step.get("tools") or [])
+        declared_budget = int(spec.tool_policy.get("max_tool_calls") or 0)
+        max_tool_calls = (
+            min(declared_budget, memory.tool_calls_left) if memory is not None else declared_budget
+        )
         if not allowed or max_tool_calls < 1:
             return []
         tenant_id = run.get("tenant_id")
         run_id = run.get("id")
         evidence_summary = ", ".join(
             f"{source['source_id']}({source['source_type']},{source['platform']})"
-            for source in run["evidence"][:10]
+            for source in [source for source in run["evidence"]
+                           if spec.platform == "cross_platform" or source["platform"] in {spec.platform, "cross_platform"}][:10]
         )
+        plan_summary = ""
+        if isinstance(plan, dict):
+            plan_summary = " Plan: " + "; ".join(
+                f"{step.get('step_id')}. {step.get('question')}"
+                for step in (plan.get("steps") or [])[:8]
+            )
+        audit_notes = ""
+        if memory is not None and getattr(memory, "gaps", None):
+            audit_notes = "; ".join(
+                f"{gap.get('id')}={gap.get('what')}" for gap in memory.gaps[:8]
+            )
         research_brief = (
-            "Research the installed knowledge pack for rules that ground this analysis. "
+            "Research the installed knowledge pack and this tenant's read-only "
+            "operating data for rules and numbers that ground this analysis. "
             f"Objective: {run['objective']}. Evidence on hand: {evidence_summary}. "
-            f"Assigned skills: {', '.join(spec.skill_ids) or 'none'}. "
-            "Note only rule names, thresholds, and chapter ids relevant to the objective."
+            f"Assigned skills: {', '.join(spec.skill_ids) or 'none'}."
+            f"{plan_summary}"
+            + (f" Current step: {step['question']}." if step else "")
+            + (" Working memory: " + json.dumps(memory.injection(), ensure_ascii=False) if memory else "")
+            + (f" Audited gaps: {audit_notes}." if audit_notes else "")
+            + " Note only rule names, thresholds, ids, and observed values relevant "
+            "to the objective. Do not restate long excerpts."
         )
         tool_calls_used = 0
+        verified_notes = []
 
-        def tool_executor(name: str, arguments: dict[str, Any]) -> str:
+        def execute_tool(name: str, arguments: dict[str, Any]) -> str:
             nonlocal tool_calls_used
             started = time.monotonic()
+            safe_arguments = dict(arguments or {})
+            pinned_platform = None
+            if name in OPS_SOURCE_TYPES or name.startswith("opc.ops_"):
+                # The model must not choose the marketplace: the executor pins it
+                # to the calling role's platform (cross-platform roles see all).
+                supplied = safe_arguments.pop("platform", None)
+                if spec.platform != "cross_platform":
+                    pinned_platform = spec.platform
+                    safe_arguments["platform"] = spec.platform
+                elif isinstance(supplied, str) and supplied.strip():
+                    safe_arguments["platform"] = supplied.strip()
             digest = hashlib.sha256(
-                json.dumps(arguments, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()[:16]
-            base = {"agent_name": spec.name, "tool": name, "arguments_digest": digest}
+            base = {
+                "agent_name": spec.name,
+                "tool": name,
+                "arguments_digest": digest,
+                "platform_pinned": pinned_platform,
+            }
+            if memory is not None and memory.seconds_left <= 0:
+                return "ERROR: specialist wall clock deadline reached"
             if tool_calls_used >= max_tool_calls:
                 self.db.record_tool_invocation(
                     tenant_id, run_id, spec.name,
@@ -2211,6 +3095,24 @@ class WeeklyOpsCouncil:
                 )
                 return "ERROR: tool call budget exhausted"
             tool_calls_used += 1
+            if memory is not None and not memory.allow_tool_call(name, digest):
+                self.db.record_agent_event(
+                    tenant_id, run_id, spec.name, "task.step.duplicate_refused",
+                    payload={"tool": name, "arguments_digest": digest},
+                )
+                return "ERROR: identical tool call already made; use a different query"
+            if name in OPS_SOURCE_TYPES and memory is not None:
+                if memory.ops_pulls_left <= 0:
+                    self.db.record_tool_invocation(
+                        tenant_id, run_id, spec.name,
+                        summary={**base, "refused": True, "reason": "ops_pull_quota_exhausted"},
+                    )
+                    return "ERROR: tenant data pull quota exhausted for this task"
+                memory.note_ops_pull()
+                self.db.record_agent_event(tenant_id, run_id, spec.name, "task.ops_pull",
+                    payload={"tool": name, "platform_pinned": pinned_platform,
+                             "gap_linked": bool(step and step.get("gap_id")),
+                             "gap_id": step.get("gap_id") if step else None})
             if name not in allowed:
                 self.db.record_tool_invocation(
                     tenant_id, run_id, spec.name,
@@ -2219,9 +3121,34 @@ class WeeklyOpsCouncil:
                 return "ERROR: tool is not allowed for this agent"
             error = None
             try:
-                text = knowledge_client.call(name, arguments)
+                if isinstance(knowledge_client, McpStdioKnowledgeClient) and memory is not None:
+                    text = knowledge_client.call(name, safe_arguments, timeout_seconds=min(30, max(0.001, memory.seconds_left)))
+                else:
+                    text = knowledge_client.call(name, safe_arguments)
             except Exception as exc:
-                text, error = "", str(exc)[:200]
+                text, error = "", type(exc).__name__
+            if isinstance(text, str) and text.startswith(("ERROR:", "Runtime ", "Live runtime")):
+                error = "read-only runtime tool unavailable"
+            if error and memory is not None:
+                memory.gaps.append({"id": "tool-unavailable:" + name, "what": "read-only tool unavailable"})
+            if name in OPS_SOURCE_TYPES and error is None:
+                parsed = _json_or_none(text)
+                if parsed is None:
+                    error = "runtime returned invalid JSON"
+                    if memory is not None:
+                        memory.gaps.append({"id": "tool-unavailable:" + name, "what": error})
+                else:
+                    # Freeze snapshots from the full successful result before
+                    # truncating the model-facing text.
+                    full_note = {"tool": name, "arguments": safe_arguments, "result": text,
+                                 "fetched_at": datetime.now(timezone.utc).isoformat()}
+                    candidates = tool_evidence_from_notes([full_note], platform=spec.platform,
+                                                         limit=MAX_KNOWLEDGE_EVIDENCE_PER_TASK)
+                    self.db.record_agent_artifact(tenant_id, run_id, spec.name,
+                                                  "tool_evidence_snapshot", {"entries": candidates})
+                    # These trusted notes are made by the executor, never by the model.
+                    verified_notes.append({**full_note, "result": "snapshot stored",
+                                           "verified_evidence": candidates})
             bounded, was_truncated = truncate_text(text)
             self.db.record_tool_invocation(
                 tenant_id, run_id, spec.name,
@@ -2234,19 +3161,34 @@ class WeeklyOpsCouncil:
             )
             return f"ERROR: {error}" if error is not None else bounded
 
-        notes = research(
-            agent_name=spec.name,
-            research_brief=research_brief,
-            tools=[
-                tool for tool in self.RESEARCH_TOOL_DEFS if tool["name"] in allowed
-            ],
-            tool_executor=tool_executor,
-            max_tool_calls=max_tool_calls,
-            safety_identifier=safety_identifier,
-        )
+        def tool_executor(name: str, arguments: dict[str, Any]) -> str:
+            result = execute_tool(name, arguments)
+            note = {"tool": name, "arguments": dict(arguments or {}), "result": result,
+                    "fetched_at": datetime.now(timezone.utc).isoformat()}
+            if not result.startswith("ERROR:"):
+                candidates = tool_evidence_from_notes([note], platform=spec.platform,
+                                                     limit=MAX_KNOWLEDGE_EVIDENCE_PER_TASK)
+                note["verified_evidence"] = candidates
+                if candidates:
+                    self.db.record_agent_artifact(tenant_id, run_id, spec.name,
+                                                  "tool_evidence_snapshot", {"entries": candidates})
+            verified_notes.append(note)
+            return result
+
+        with _call_context(memory, _USAGE_SINK.get()):
+            research(
+                agent_name=spec.name,
+                research_brief=research_brief,
+                tools=[
+                    tool for tool in self.RESEARCH_TOOL_DEFS if tool["name"] in allowed
+                ],
+                tool_executor=tool_executor,
+                max_tool_calls=max_tool_calls,
+                safety_identifier=safety_identifier,
+            )
         bounded_notes: list[dict[str, Any]] = []
         total_chars = 0
-        for note in notes:
+        for note in verified_notes:
             size = len(json.dumps(note, ensure_ascii=False))
             if total_chars + size > MAX_RESEARCH_NOTES_CHARS:
                 break
@@ -2277,6 +3219,212 @@ class WeeklyOpsCouncil:
         result["platforms"] = run.get("platforms") or derived
         return result
 
+    def _skill_inputs_of(self, skill_ids: Sequence[str]) -> dict[str, dict[str, bool]]:
+        declared: dict[str, dict[str, bool]] = {}
+        for contract in self.skill_loader.load(tuple(skill_ids)):
+            name = contract.get("name")
+            if not name:
+                continue
+            declared[str(name)] = {
+                str(item.get("name")): bool(item.get("required"))
+                for item in (contract.get("inputs") or [])
+                if isinstance(item, dict) and item.get("name")
+            }
+        return declared
+
+    def _skill_inputs_by_platform(self, run: dict[str, Any]) -> dict[str, dict[str, dict[str, bool]]]:
+        """Assemble the audit's input contract from the routed skills per platform."""
+        try:
+            route = self.db.get_agent_route(run["tenant_id"], run["id"]) or {}
+        except Exception:  # pragma: no cover - audit falls back to every installed skill
+            route = {}
+        by_platform = route.get("by_platform") if isinstance(route, dict) else None
+        declared: dict[str, dict[str, dict[str, bool]]] = {}
+        for platform in self._marketplace_platforms(run):
+            selected = list((by_platform or {}).get(platform) or [])
+            if not selected:
+                selected = list(self.skill_loader.skill_ids_for_platform(platform))
+            declared[platform] = self._skill_inputs_of(selected)
+        return declared
+
+    def _execute_audit_task(
+        self,
+        principal: Principal,
+        run_id: str,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        knowledge_client: KnowledgeToolClient | None = None,
+    ) -> dict[str, Any]:
+        """Audit the whole evidence base, then let the analyst judge its adequacy.
+
+        The accounting is code (``audit_evidence``) so completeness, freshness and
+        cross-platform comparability are reproducible and testable; the analyst
+        contributes the judgement call this role owns -- is this evidence enough
+        to answer the objective, which gaps matter, what would change a
+        conclusion.
+        """
+        try:
+            deterministic = audit_evidence(
+                run["evidence"],
+                skill_inputs_by_platform=self._skill_inputs_by_platform(run),
+            )
+            self.db.record_agent_artifact(
+                principal.tenant_id, run_id, spec.name,
+                "evidence_audit_deterministic", deterministic,
+            )
+            self.db.record_agent_event(
+                principal.tenant_id, run_id, spec.name, "run.evidence_audit.computed",
+                payload={
+                    "adequacy": deterministic["adequacy"],
+                    "gap_count": len(deterministic["gaps"]),
+                    "platforms": [row["platform"] for row in deterministic["platforms"]],
+                },
+            )
+            payload: dict[str, Any] = {
+                "workflow": run["workflow"],
+                "objective": run["objective"],
+                "platforms": self._marketplace_platforms(run),
+                "assigned_skills": list(spec.skill_ids),
+                "skill_contracts": self.skill_loader.load(spec.skill_ids),
+                "evidence_catalog": [
+                    {
+                        "source_id": source["source_id"],
+                        "platform": source["platform"],
+                        "source_type": source["source_type"],
+                        "observed_at": source["observed_at"],
+                    }
+                    for source in run["evidence"]
+                ],
+                "deterministic_audit": deterministic,
+            }
+            try:
+                with _call_context(None, lambda usage: self.db.record_agent_event(
+                    principal.tenant_id, run_id, spec.name, "task.usage", payload=usage
+                )):
+                    judgement = self.provider.complete(
+                        agent_name=spec.name, instructions=spec.instructions,
+                        payload=payload, output_schema=EVIDENCE_AUDIT_SCHEMA,
+                        safety_identifier=safety_identifier,
+                    )
+                self._validate_audit_judgement(judgement, deterministic)
+            except (RuntimeErrorBase, TimeoutError, ValueError, TypeError, KeyError):
+                judgement = {"adequacy": "unknown", "why": "Analyst judgement unavailable or invalid; deterministic audit retained.",
+                             "ranked_gaps": [], "would_change_conclusion": [],
+                             "comparability_warnings": deterministic["comparability"]["blockers"],
+                             "applicability_note": "Human review required."}
+                self.db.record_agent_event(principal.tenant_id, run_id, spec.name,
+                                           "task.audit.degraded", payload={"adequacy": "unknown"})
+            # A judgement may be more conservative, but cannot erase computed gaps.
+            order = {"supported": 0, "partial": 1, "insufficient": 2, "unknown": 3}
+            deterministic = dict(deterministic)
+            deterministic["adequacy"] = max((deterministic["adequacy"], judgement["adequacy"]), key=order.get)
+            self.db.record_agent_artifact(
+                principal.tenant_id, run_id, spec.name,
+                "evidence_audit",
+                {"judgement": judgement, "deterministic": deterministic},
+            )
+            result = {
+                "platform": "cross_platform",
+                "summary": str(judgement.get("why") or ""),
+                "findings": [],
+                "data_gaps": [str(gap.get("what")) for gap in deterministic["gaps"]],
+                "evidence_sufficiency": {
+                    "level": str(judgement.get("adequacy") or "unknown"),
+                    "reason": str(judgement.get("why") or ""),
+                },
+                "plan_executed": [],
+                "deterministic_audit": deterministic,
+                "audit_judgement": judgement,
+            }
+            self.db.complete_agent_task(
+                principal.tenant_id, run_id, spec.name, result,
+                artifact_kind="evidence_audit_judgement",
+            )
+            return result
+        except Exception as exc:
+            self.db.fail_agent_task(
+                principal.tenant_id, run_id, spec.name, str(exc)
+            )
+            raise
+
+    @staticmethod
+    def _validate_audit_judgement(judgement: dict[str, Any], deterministic: dict[str, Any]) -> None:
+        if not isinstance(judgement, dict):
+            raise ExternalServiceError("evidence audit judgement was not an object")
+        if set(judgement) != set(EVIDENCE_AUDIT_SCHEMA["required"]):
+            raise ExternalServiceError("evidence audit judgement fields did not match the schema")
+        if judgement.get("adequacy") not in {"supported", "partial", "insufficient", "unknown"}:
+            raise ExternalServiceError("evidence audit returned an unknown adequacy level")
+        if judgement.get("adequacy") != "supported" and not str(judgement.get("why") or "").strip():
+            raise ExternalServiceError("evidence audit must explain a non-supported verdict")
+        known_gaps = {str(gap.get("id")) for gap in deterministic.get("gaps") or []}
+        for row in judgement.get("ranked_gaps") or []:
+            if not isinstance(row, dict) or set(row) != {"gap_id", "impact", "risk_if_ignored"}:
+                raise ExternalServiceError("evidence audit gap rows are malformed")
+            if str(row.get("gap_id")) not in known_gaps:
+                raise ExternalServiceError(
+                    f"evidence audit referenced an unknown gap: {row.get('gap_id')}"
+                )
+
+    def _execute_platform_task(
+        self,
+        principal: Principal,
+        run_id: str,
+        spec: AgentSpec,
+        run: dict[str, Any],
+        safety_identifier: str,
+        source_platforms: dict[str, str],
+        knowledge_client: KnowledgeToolClient | None = None,
+        revision_feedback: list[dict[str, Any]] | None = None,
+        *,
+        findings: dict[str, dict[str, Any]] | None = None,
+        audit: Any = None,
+    ) -> dict[str, Any]:
+        """Run one analysis role (platform specialist or cross controller)."""
+        try:
+            if spec.platform == "cross_platform":
+                payload = {"workflow": run["workflow"], "objective": run["objective"],
+                           "target_platform": spec.platform, "evidence": run["evidence"],
+                           "specialist_findings": findings or {}, "evidence_audit": audit,
+                           "assigned_skills": list(spec.skill_ids), "skill_contracts": self.skill_loader.load(spec.skill_ids)}
+                if revision_feedback is not None:
+                    payload["revision_feedback"] = revision_feedback
+                notes = self._research_notes(spec, run, safety_identifier, knowledge_client)
+                candidates = tool_evidence_from_notes(notes, platform=spec.platform, limit=MAX_KNOWLEDGE_EVIDENCE_PER_TASK)
+                payload["research_notes"] = notes
+                payload["knowledge_candidates"] = [{"source_id": entry["source_id"], **entry["data"]} for entry in candidates]
+                payload["plan_executed"] = []
+                payload["evidence_sufficiency"] = {"level": "sufficient", "reason": "controller consolidates platform findings"}
+                result = self._complete_recorded(spec, run, agent_name=spec.name, instructions=spec.instructions,
+                    payload=payload, output_schema=SPECIALIST_SCHEMA, safety_identifier=safety_identifier)
+                outcome = {"result": result, "candidates": candidates, "plan": None}
+            else:
+                outcome = self._run_specialist(
+                    spec, run, safety_identifier, knowledge_client, revision_feedback,
+                    audit=audit, findings=findings,
+                )
+            result = outcome["result"]
+            used = validate_knowledge_citations(
+                citation_entries(result, manager=False), outcome["candidates"]
+            )
+            result = harness.enforce_plan_executed(result, outcome["plan"])
+            self._validate_refs(
+                result,
+                source_platforms | {entry["source_id"]: entry["platform"] for entry in used},
+                manager=False,
+                expected_platform=spec.platform,
+                extra_source_ids={entry["source_id"] for entry in used},
+            )
+            # Bookkeeping is attached after validation: the schema contract
+            # describes what the model must produce, not what we add to it.
+            result["knowledge_evidence"] = used
+            self.db.complete_agent_task(principal.tenant_id, run_id, spec.name, result)
+            return result
+        except Exception as exc:
+            self.db.fail_agent_task(principal.tenant_id, run_id, spec.name, str(exc))
+            raise
+
     def _execute_specialist_task(
         self,
         principal: Principal,
@@ -2287,24 +3435,13 @@ class WeeklyOpsCouncil:
         source_platforms: dict[str, str],
         knowledge_client: KnowledgeToolClient | None = None,
         revision_feedback: list[dict[str, Any]] | None = None,
+        *,
+        audit: Any = None,
     ) -> dict[str, Any]:
-        try:
-            result = self._run_specialist(spec, run, safety_identifier, knowledge_client, revision_feedback)
-            self._validate_refs(
-                result,
-                source_platforms,
-                manager=False,
-                expected_platform=spec.platform,
-            )
-            self.db.complete_agent_task(
-                principal.tenant_id, run_id, spec.name, result
-            )
-            return result
-        except Exception as exc:
-            self.db.fail_agent_task(
-                principal.tenant_id, run_id, spec.name, str(exc)
-            )
-            raise
+        return self._execute_platform_task(
+            principal, run_id, spec, run, safety_identifier, source_platforms,
+            knowledge_client, revision_feedback, audit=audit,
+        )
 
     def _execute_cross_task(
         self,
@@ -2317,45 +3454,16 @@ class WeeklyOpsCouncil:
         findings: dict[str, dict[str, Any]],
         knowledge_client: KnowledgeToolClient | None = None,
         revision_feedback: list[dict[str, Any]] | None = None,
+        *,
+        audit: Any = None,
     ) -> dict[str, Any]:
+        # The cross controller runs after the specialist barrier, so it is not
+        # part of the dispatcher's up-front start list and claims itself here.
         self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
-        try:
-            payload = {
-                "workflow": run["workflow"],
-                "objective": run["objective"],
-                "target_platform": "cross_platform",
-                "platforms": self._marketplace_platforms(run),
-                "assigned_skills": list(spec.skill_ids),
-                "skill_contracts": self.skill_loader.load(spec.skill_ids),
-                "specialist_findings": findings,
-            }
-            notes = self._research_notes(spec, run, safety_identifier, knowledge_client)
-            if notes:
-                payload["research_notes"] = notes
-            if revision_feedback is not None:
-                payload["revision_feedback"] = revision_feedback
-            result = self.provider.complete(
-                agent_name=spec.name,
-                instructions=spec.instructions,
-                payload=payload,
-                output_schema=SPECIALIST_SCHEMA,
-                safety_identifier=safety_identifier,
-            )
-            self._validate_refs(
-                result,
-                source_platforms,
-                manager=False,
-                expected_platform="cross_platform",
-            )
-            self.db.complete_agent_task(
-                principal.tenant_id, run_id, spec.name, result
-            )
-            return result
-        except Exception as exc:
-            self.db.fail_agent_task(
-                principal.tenant_id, run_id, spec.name, str(exc)
-            )
-            raise
+        return self._execute_platform_task(
+            principal, run_id, spec, run, safety_identifier, source_platforms,
+            knowledge_client, revision_feedback, findings=findings, audit=audit,
+        )
 
     def _execute_manager_task(
         self,
@@ -2368,6 +3476,8 @@ class WeeklyOpsCouncil:
         findings: dict[str, dict[str, Any]],
         valid_owners: set[str],
         revision_feedback: list[dict[str, Any]] | None = None,
+        *,
+        audit: Any = None,
     ) -> dict[str, Any]:
         self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
         payload = {
@@ -2385,21 +3495,41 @@ class WeeklyOpsCouncil:
                 ],
                 "specialist_findings": findings,
             }
+        if audit is not None:
+            payload["evidence_audit"] = audit
+        payload["specialist_plans"] = self._latest_plans(run)
         if revision_feedback is not None:
             payload["revision_feedback"] = revision_feedback
-        report = self.provider.complete(
+        report = self._complete_recorded(spec, run,
             agent_name=spec.name,
             instructions=spec.instructions,
             payload=payload,
             output_schema=MANAGER_SCHEMA,
             safety_identifier=safety_identifier,
         )
+        candidates = merge_tool_evidence(findings)
+        used = validate_knowledge_citations(
+            citation_entries(report, manager=True), candidates
+        )
+        sufficiency = {
+            str(result.get("platform")): str(
+                (result.get("evidence_sufficiency") or {}).get("level") or "unknown"
+            )
+            for result in findings.values()
+            if isinstance(result, dict) and result.get("platform")
+        }
         self._validate_refs(
             report,
-            source_platforms,
+            source_platforms | {entry["source_id"]: entry["platform"] for entry in used},
             manager=True,
             valid_owners=valid_owners,
+            extra_source_ids={entry["source_id"] for entry in used},
+            sufficiency_by_platform=sufficiency,
         )
+        report["knowledge_evidence"] = used
+        if audit and audit.get("adequacy") != "supported":
+            if not any(str(audit.get("adequacy")) in line.lower() for line in report["limitations"]):
+                raise ExternalServiceError("manager limitations must declare audit adequacy")
         self._validate_manager_metric_claims(
             report, run["evidence"], coerce_incompatible_claims=True
         )
@@ -2422,10 +3552,12 @@ class WeeklyOpsCouncil:
         source_platforms: dict[str, str],
         findings: dict[str, dict[str, Any]],
         report: dict[str, Any],
+        *,
+        audit: Any = None,
     ) -> dict[str, Any]:
         self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
         try:
-            review = self.provider.complete(
+            review = self._complete_recorded(spec, run,
                 agent_name=spec.name,
                 instructions=spec.instructions,
                 payload={
@@ -2442,13 +3574,21 @@ class WeeklyOpsCouncil:
                         for source in run["evidence"]
                     ],
                     "evidence": run["evidence"],
+                    "evidence_audit": audit,
                     "specialist_findings": findings,
                     "manager_report": report,
                 },
                 output_schema=REVIEWER_SCHEMA,
                 safety_identifier=safety_identifier,
             )
-            self._validate_reviewer(review, source_platforms, report)
+            self._validate_reviewer(
+                review,
+                source_platforms,
+                report,
+                extra_source_ids={
+                    entry["source_id"] for entry in merge_tool_evidence(findings)
+                },
+            )
             self.db.complete_agent_task(
                 principal.tenant_id,
                 run_id,
@@ -2500,11 +3640,12 @@ class WeeklyOpsCouncil:
                     "agent graph execution contract changed after the run was requested"
                 )
             definition = graph_version["definition"]
-            initial_specs, cross_spec, manager_spec, reviewer_spec = self._task_specs(
-                run, definition
+            audit_spec, specialist_specs, cross_spec, manager_spec, reviewer_spec = (
+                self._task_specs(run, definition)
             )
             task_specs = [
-                *initial_specs,
+                audit_spec,
+                *specialist_specs,
                 *([cross_spec] if cross_spec else []),
                 manager_spec,
                 reviewer_spec,
@@ -2518,7 +3659,7 @@ class WeeklyOpsCouncil:
             source_platforms = self._source_platforms(run["evidence"])
             valid_owners = {
                 spec.name
-                for spec in [*initial_specs, *([cross_spec] if cross_spec else [])]
+                for spec in [*specialist_specs, *([cross_spec] if cross_spec else [])]
             } | {"human_operator"}
             # Tool phase is opt-in at three gates: a node whose published policy
             # allows research tools, a provider that implements research(), and
@@ -2532,12 +3673,16 @@ class WeeklyOpsCouncil:
                 knowledge_client = self.knowledge_client or McpStdioKnowledgeClient()
                 knowledge_client_owned = self.knowledge_client is None
             run_graph = build_run_graph(
-                initial_specs=initial_specs,
+                audit_spec=audit_spec,
+                specialist_specs=specialist_specs,
                 cross_spec=cross_spec,
                 start_agent_task=lambda spec: self.db.start_agent_task(
                     principal.tenant_id, run_id, spec.name
                 ),
-                run_specialist=lambda spec: self._execute_specialist_task(
+                run_audit=lambda spec: self._execute_audit_task(
+                    principal, run_id, spec, run, safety_identifier, knowledge_client,
+                ),
+                run_specialist=lambda spec, findings: self._execute_specialist_task(
                     principal,
                     run_id,
                     spec,
@@ -2545,6 +3690,7 @@ class WeeklyOpsCouncil:
                     safety_identifier,
                     source_platforms,
                     knowledge_client,
+                    audit=self._audit_from_findings(findings),
                 ),
                 run_cross=lambda findings: self._execute_cross_task(
                     principal,
@@ -2555,6 +3701,7 @@ class WeeklyOpsCouncil:
                     source_platforms,
                     findings,
                     knowledge_client,
+                    audit=self._audit_from_findings(findings),
                 ),
                 run_manager=lambda findings: self._execute_manager_task(
                     principal,
@@ -2565,6 +3712,7 @@ class WeeklyOpsCouncil:
                     source_platforms,
                     findings,
                     valid_owners,
+                    audit=self._audit_from_findings(findings),
                 ),
                 run_reviewer=lambda findings, report: self._execute_reviewer_task(
                     principal,
@@ -2575,6 +3723,7 @@ class WeeklyOpsCouncil:
                     source_platforms,
                     findings,
                     report,
+                    audit=self._audit_from_findings(findings),
                 ),
                 max_workers=self.max_workers,
             )
@@ -2583,15 +3732,16 @@ class WeeklyOpsCouncil:
                 raise graph_state["failure"]
             report = graph_state["report"]
             review = graph_state["review"]
+            findings = dict(graph_state.get("findings", {}))
+            audit = self._audit_from_findings(findings)
             if review["verdict"] == "revision_required":
                 target = review["revision_target"]
                 feedback = review["issues"]
-                findings = dict(graph_state.get("findings", {}))
                 revised = []
                 if target == "platform_specialist":
                     platform = review["revision_platform"]
                     specialist = next(
-                        (spec for spec in initial_specs if spec.platform == platform), None
+                        (spec for spec in specialist_specs if spec.platform == platform), None
                     )
                     if specialist is None:
                         raise ExternalServiceError("reviewer targeted an unavailable specialist")
@@ -2609,21 +3759,31 @@ class WeeklyOpsCouncil:
                     self.db.start_agent_task(principal.tenant_id, run_id, specialist.name)
                     findings[specialist.name] = self._execute_specialist_task(
                         principal, run_id, specialist, run, safety_identifier,
-                        source_platforms, knowledge_client, feedback,
+                        source_platforms, knowledge_client, feedback, audit=audit,
                     )
                 if cross_spec is not None and target in {"platform_specialist", "cross_controller"}:
                     findings[cross_spec.name] = self._execute_cross_task(
                         principal, run_id, cross_spec, run, safety_identifier,
-                        source_platforms, findings, knowledge_client, feedback,
+                        source_platforms, findings, knowledge_client, feedback, audit=audit,
                     )
                 report = self._execute_manager_task(
                     principal, run_id, manager_spec, run, safety_identifier,
-                    source_platforms, findings, valid_owners, feedback,
+                    source_platforms, findings, valid_owners, feedback, audit=audit,
                 )
                 review = self._execute_reviewer_task(
                     principal, run_id, reviewer_spec, run, safety_identifier,
-                    source_platforms, findings, report,
+                    source_platforms, findings, report, audit=audit,
                 )
+            reasons = []
+            if audit.get("adequacy") != "supported":
+                reasons.append("evidence_audit:" + str(audit.get("adequacy", "unknown")))
+            for spec in specialist_specs:
+                level = findings[spec.name]["evidence_sufficiency"]["level"]
+                if level != "sufficient":
+                    reasons.append(spec.platform + ":" + level)
+            report["execution_gate"] = {"eligible": not reasons, "reasons": reasons}
+            self.db.record_agent_event(principal.tenant_id, run_id, manager_spec.name,
+                                      "run.execution_gate", payload=report["execution_gate"])
             bundle = self.db.complete_agent_run(
                 principal.tenant_id,
                 run_id,

@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Specialist harness: persist deterministic Router effort tiers, run the
+  evidence audit before parallel specialists, and bound specialist planning,
+  per-step research, reflection, and one replan. Platform-pinned read-only
+  MCP ops tools use frozen evidence snapshots and explicit budgets. Limited
+  reports remain viewable but cannot enter automated downstream execution.
+  Admins explicitly publish the upgraded default graph with
+  `graph-publish-default`; historical run/version associations are retained.
 - Bounded MCP tool phase for graph agents: the evidence analyst's published
   graph policy may declare a subset of the read-only knowledge whitelist
   (`opc.search_knowledge`, `opc.get_constraints`, `opc.read_chapter`, max 8

@@ -193,6 +193,8 @@ class ProposalService:
             ).fetchall()
         if len(artifacts) != 1:
             raise ConflictError("eligible run must have exactly one final Manager synthesis")
+        if not self.db.agent_run_downstream_eligible(tenant_id, row["agent_run_id"]):
+            raise ConflictError("evidence is insufficient for downstream proposals")
         report = json.loads(artifacts[0]["content_json"])
         priorities = report.get("priorities") if isinstance(report, dict) else None
         matches = [item for item in (priorities or []) if isinstance(item, dict) and item.get("rank") == priority_rank]
@@ -314,6 +316,10 @@ class ProposalService:
         self.auth.require(principal, "viewer")
         proposal, version = self._row(principal.tenant_id, proposal_id)
         with self.db.connect() as conn:
+            daily_source = conn.execute(
+                "SELECT schedule_config_json FROM daily_ops_runs WHERE tenant_id=? AND id=?",
+                (principal.tenant_id, proposal["daily_ops_run_id"]),
+            ).fetchone()
             decisions = [dict(row) for row in conn.execute(
                 """SELECT * FROM proposal_decisions WHERE tenant_id=? AND proposal_id=?
                    ORDER BY proposal_version,created_at,id""", (principal.tenant_id, proposal_id)
@@ -332,6 +338,7 @@ class ProposalService:
         current.pop("proposal_id", None)
         stored_version = current.pop("version")
         result = {**dict(proposal), **current}
+        result["platform"] = json.loads(daily_source["schedule_config_json"]).get("platform") if daily_source else None
         result["version"] = result.pop("current_version")
         if result["version"] != stored_version:
             raise ConflictError("proposal version binding is inconsistent")

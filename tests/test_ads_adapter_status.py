@@ -9,7 +9,8 @@ import pytest
 from ecommerce_ai_skills.runtime.ads_adapter_status import AdsAdapterStatusService
 from ecommerce_ai_skills.runtime.ads_gates import REQUIRED_CAPABILITIES
 from ecommerce_ai_skills.runtime.actions import ActionService
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.auth import AuthService
 from ecommerce_ai_skills.runtime.errors import NotFoundError, ValidationError
 from ecommerce_ai_skills.runtime.storage import Database

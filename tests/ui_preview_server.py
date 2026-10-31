@@ -16,7 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.demo_seed import DemoSeedProvider
 from datetime import datetime, timedelta, timezone
 from ecommerce_ai_skills.runtime.storage import Database

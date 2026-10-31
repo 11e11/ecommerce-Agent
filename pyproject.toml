@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "CC0-1.0" }
 dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
   "langgraph>=0.4,<2",
   "mcp>=1.28,<2",
   "PyYAML>=6,<7",
@@ -47,6 +49,7 @@ rag = [
   "pymilvus>=2.5,<3",
 ]
 dev = [
+  "httpx>=0.27,<1",
   "pytest>=8,<9",
   "openpyxl>=3.1,<4",
 ]

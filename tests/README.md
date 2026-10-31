@@ -114,7 +114,7 @@ route, `text/event-stream` media type, bearer-header-only authentication,
 header-first tenant-local integer cursor semantics, closed safe `MissionEvent`
 metadata, reset/reconnect controls, comment-only heartbeats, and `401`/`403`/`422`/`429`
 responses. It also checks the source and generated distribution retain the
-single-process SQLite/ThreadingHTTPServer and reverse-proxy limitations. It
+single-process SQLite/FastAPI/Uvicorn and reverse-proxy limitations. It
 does not claim a distributed broker, multiprocess fan-out, or a live external
 SSE smoke; connection and parser behavior are runtime/UI tests.
 

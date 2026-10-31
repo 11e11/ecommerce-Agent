@@ -73,11 +73,12 @@ jobs:
           from tempfile import TemporaryDirectory
           from ecommerce_ai_skills import USER_AGENT, __version__
           from ecommerce_ai_skills.runtime.agents import OpenAIResponsesProvider
-          from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+          from ecommerce_ai_skills.runtime.api import RuntimeApplication, create_app
           from ecommerce_ai_skills.runtime.storage import Database, SCHEMA_VERSION
           assert version("ecommerce-ai-skills") == __version__ == "1.3.0"
           assert USER_AGENT == "ecommerce-ai-skills/1.3.0"
-          assert _Handler.server_version == "EcommerceAI/1.3.0"
+          with TemporaryDirectory() as directory:
+              assert create_app(RuntimeApplication(Database(Path(directory) / "asgi.sqlite"))).version == "1.3.0"
           assert SCHEMA_VERSION == 22
           root = Path(".")
           demo = json.loads((root / "demo.json").read_text())

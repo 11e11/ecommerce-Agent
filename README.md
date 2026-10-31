@@ -2,6 +2,8 @@
 
 面向跨境电商运营的 Python Agent 运行时，包含多 Agent 协作、人工审批、审计、失败恢复，以及 Amazon、Amazon Ads 和 Shopify 连接器。
 
+后端使用 FastAPI + Uvicorn，Agent 编排使用 LangGraph，任务与审计数据保存在 SQLite。
+
 ## 环境要求
 
 - Python 3.10+
@@ -33,6 +35,14 @@ opc-ecommerce demo --db ./demo.sqlite --port 8788
 ```
 
 然后访问 `http://127.0.0.1:8788/app`。
+
+接口文档位于 `/docs`，机器可读的接口定义位于 `/openapi.json`。已有 `api`、`demo` 和 `pilot` 启动命令都使用同一套 FastAPI 服务。
+
+```bash
+opc-ecommerce api --db ./runtime.sqlite --host 127.0.0.1 --port 8787
+```
+
+同步业务与 Agent 执行使用线程池，实时事件流使用异步 SSE。SQLite、限流器和 SSE 连接计数目前按单进程运行，不应直接启动多个 Uvicorn worker 共享这一部署。
 
 ## 测试
 

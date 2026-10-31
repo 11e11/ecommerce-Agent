@@ -3,7 +3,8 @@ import io,json,sqlite3
 from email.message import Message
 from pathlib import Path
 import pytest
-from ecommerce_ai_skills.runtime.api import RuntimeApplication,_Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.assurance import AssuranceService
 from ecommerce_ai_skills.runtime.errors import AuthorizationError,ConflictError
 from ecommerce_ai_skills.runtime.storage import AUDIT_GENESIS_HASH,Database,audit_event_hash

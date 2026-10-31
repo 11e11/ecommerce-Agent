@@ -437,7 +437,7 @@ For a reverse proxy, disable response buffering on this route (for example,
 Nginx `proxy_buffering off;` and `X-Accel-Buffering: no`), preserve the
 `Last-Event-ID` and `Authorization` headers, keep streaming read timeouts above
 the documented stream lifetime, and do not cache or compress buffered frames.
-Terminate TLS at the proxy; the supplied `ThreadingHTTPServer` must remain
+Terminate TLS at the proxy; the supplied FastAPI/Uvicorn server must remain
 loopback-only behind that proxy.
 
 When the UI reports a disconnected live feed, first check `/healthz`, then a
@@ -449,7 +449,7 @@ advertised delay; `401` requires a new session/key and `403` requires a role
 review. Do not turn these failures into polling with an API key in a URL.
 
 This implementation boundary is intentionally single-process: SQLite plus
-`ThreadingHTTPServer` provides no cross-process event broker, shared connection
+FastAPI/Uvicorn with one worker provides no cross-process event broker, shared connection
 counter, replay log, or fan-out guarantee. Run one runtime process per SQLite
 database. Horizontal scale, multi-process replay, and durable cross-instance
 SSE require a separately designed broker/connection coordinator and are not

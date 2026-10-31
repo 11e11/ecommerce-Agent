@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.errors import (
     AuthorizationError,
     NotFoundError,

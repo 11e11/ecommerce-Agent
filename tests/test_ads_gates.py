@@ -8,7 +8,8 @@ import pytest
 
 from ecommerce_ai_skills.runtime.accounts import MarketplaceAccountService
 from ecommerce_ai_skills.runtime.ads_gates import AdsCapabilityGateService
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.auth import AuthService
 from ecommerce_ai_skills.runtime.connectors.amazon_ads import (
     AmazonAdsConnector,

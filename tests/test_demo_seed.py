@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from ecommerce_ai_skills.demo_seed import open_demo_runtime, seed_demo_database
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.errors import ValidationError
 from ecommerce_ai_skills.runtime.storage import Database
 

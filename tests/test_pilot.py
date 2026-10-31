@@ -19,7 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.errors import ConflictError
 from ecommerce_ai_skills.runtime.pilot import PilotService, PilotSupervisor
 from ecommerce_ai_skills.runtime.storage import Database, PILOT_WORKERS, utc_now
@@ -350,6 +351,7 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows SIGTERM uses TerminateProcess; graceful ASGI shutdown is covered by test_fastapi")
 def test_pilot_cli_real_http_sigterm_and_persistent_stop(tmp_path: Path) -> None:
     path = tmp_path / "pilot.sqlite"
     port = _free_port()

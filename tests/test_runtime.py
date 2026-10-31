@@ -979,7 +979,8 @@ def test_openai_responses_provider_requires_real_configuration_and_structured_ou
 def test_http_agent_run_endpoints_use_tenant_runtime(tmp_path: Path) -> None:
     from email.message import Message
 
-    from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+    from ecommerce_ai_skills.runtime.api import RuntimeApplication
+    from legacy_http import _Handler
 
     app = RuntimeApplication(
         Database(tmp_path / "runtime.sqlite"), agent_provider=_FixtureAgentProvider()
@@ -1056,7 +1057,8 @@ def test_http_csv_import_and_agent_run_reference(tmp_path: Path) -> None:
     import io
     from email.message import Message
 
-    from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+    from ecommerce_ai_skills.runtime.api import RuntimeApplication
+    from legacy_http import _Handler
 
     app = RuntimeApplication(
         Database(tmp_path / "runtime.sqlite"), agent_provider=_FixtureAgentProvider()
@@ -1228,7 +1230,8 @@ def test_scheduler_materializes_weekly_run_and_job_then_advances(tmp_path: Path)
 
 def test_mission_control_and_approval_inbox_are_real_tenant_views(tmp_path: Path) -> None:
     from email.message import Message
-    from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+    from ecommerce_ai_skills.runtime.api import RuntimeApplication
+    from legacy_http import _Handler
 
     app = RuntimeApplication(
         Database(tmp_path / "runtime.sqlite"), agent_provider=_FixtureAgentProvider()
@@ -1291,7 +1294,8 @@ def test_worker_and_scheduler_cli_once_exit_cleanly_without_work(tmp_path: Path)
 def test_http_health_and_auth_boundary(tmp_path: Path) -> None:
     from email.message import Message
 
-    from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+    from ecommerce_ai_skills.runtime.api import RuntimeApplication
+    from legacy_http import _Handler
 
     app = RuntimeApplication(Database(tmp_path / "runtime.sqlite"))
     bootstrap = app.bootstrap("A", "owner@example.com")
@@ -1333,7 +1337,8 @@ def test_http_health_and_auth_boundary(tmp_path: Path) -> None:
 def test_http_user_onboarding_closes_two_actor_approval_flow(tmp_path: Path) -> None:
     from email.message import Message
 
-    from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+    from ecommerce_ai_skills.runtime.api import RuntimeApplication
+    from legacy_http import _Handler
 
     app = RuntimeApplication(Database(tmp_path / "runtime.sqlite"))
     bootstrap = app.bootstrap("A", "owner@example.com")
@@ -1436,7 +1441,8 @@ def test_http_user_onboarding_closes_two_actor_approval_flow(tmp_path: Path) -> 
 
 def test_metrics_are_disposable_and_visible_only_to_authenticated_viewers(tmp_path: Path) -> None:
     from email.message import Message
-    from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+    from ecommerce_ai_skills.runtime.api import RuntimeApplication
+    from legacy_http import _Handler
 
     app = RuntimeApplication(Database(tmp_path / "runtime.sqlite"))
     bootstrap = app.bootstrap("A", "owner@example.com")

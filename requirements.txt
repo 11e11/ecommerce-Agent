@@ -29,6 +29,8 @@ lightfm>=1.16
 prophet>=1.0.0
 
 # 工具库
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
 requests>=2.25.0
 beautifulsoup4>=4.9.0
 scrapy>=2.5.0

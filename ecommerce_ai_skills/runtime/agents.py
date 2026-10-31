@@ -28,6 +28,7 @@ from ecommerce_ai_skills import USER_AGENT
 from .auth import AuthService
 from .agent_graphs import AgentGraphService, STRICT_TOOL_POLICY
 from . import harness
+from .continuations import build_continuation, context_for_platform, execution_trace
 from .evidence_audit import audit_evidence
 
 from .errors import (
@@ -2096,6 +2097,7 @@ class WeeklyOpsCouncil:
         parent_daily_ops_run_id: str | None = None,
         parent_daily_ops_attempt: int | None = None,
         parent_daily_ops_lease_token: str | None = None,
+        continuation_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.auth.require(principal, "operator")
         graph_version = self.graph_service.resolve_published(principal, graph_version_id)
@@ -2155,6 +2157,7 @@ class WeeklyOpsCouncil:
             graph_version_id=graph_version["id"],
             graph_version_hash=graph_version["definition_hash"],
             skill_route=route,
+            continuation_context=continuation_context,
             metric_observation_ids=observation_ids,
             origin=origin,
             parent_daily_ops_run_id=parent_daily_ops_run_id,
@@ -2217,6 +2220,44 @@ class WeeklyOpsCouncil:
     def get(self, principal: Principal, run_id: str) -> dict[str, Any]:
         self.auth.require(principal, "viewer")
         return self.db.get_agent_run_bundle(principal.tenant_id, run_id)
+
+    def trace(self, principal: Principal, run_id: str) -> dict[str, Any]:
+        return execution_trace(self.get(principal, run_id))
+
+    def follow_up(
+        self, principal: Principal, parent_run_id: str, feedback: Any,
+        idempotency_key: str, request_id: str, *, objective: Any = None,
+        evidence: Any = None, evidence_import_ids: Any = None,
+    ) -> dict[str, Any]:
+        """Create an immutable child run; re-audit evidence instead of replaying old conclusions."""
+        self.auth.require(principal, "operator")
+        parent = self.get(principal, parent_run_id)
+        old = parent["run"]
+        if old["status"] != "completed" or old["review_status"] != "approved":
+            raise ConflictError("follow-up requires a completed, approved parent run")
+        context = build_continuation(parent, feedback)
+        if isinstance(objective, str):
+            context["root_objective"] = objective
+        if evidence is not None and not isinstance(evidence, list):
+            raise ValidationError("evidence must be an array when provided")
+        # Same source id replaces the parent's snapshot, rather than silently
+        # keeping two inconsistent copies. Metric Observations remain DB-owned.
+        inherited = {source["source_id"]: source for source in old["evidence"]
+                     if source["source_type"] != "metric_observation"}
+        for source in evidence or []:
+            if not isinstance(source, dict) or not isinstance(source.get("source_id"), str):
+                raise ValidationError("each follow-up evidence source requires source_id")
+            inherited[source["source_id"]] = source
+        new_objective = objective if objective is not None else context["root_objective"] + "\n用户补充：" + context["feedback"]
+        if objective is None and len(new_objective) > 1000:
+            raise ValidationError("combined objective exceeds 1000 characters; provide a concise revised objective")
+        return self.request(
+            principal, old["workflow"], new_objective, list(inherited.values()),
+            idempotency_key, request_id, evidence_import_ids=evidence_import_ids,
+            graph_version_id=old["graph_version_id"],
+            metric_observation_ids=old.get("metric_observation_ids") or [],
+            continuation_context=context,
+        )
 
     @staticmethod
     def _safety_identifier(principal: Principal) -> str:
@@ -2903,6 +2944,18 @@ class WeeklyOpsCouncil:
             "evidence_audit": self._audit_slice(audit, spec.platform),
             "effort_tier": budget.name,
         }
+        continuation = context_for_platform(
+            self.db.get_continuation_context(run["tenant_id"], run["id"]), spec.platform,
+        )
+        if continuation is not None:
+            base_payload["continuation_context"] = continuation
+        self.db.record_agent_artifact(
+            run["tenant_id"], run["id"], spec.name, "context_assembly",
+            {"platform": spec.platform, "skills": list(spec.skill_ids),
+             "evidence_ids": [source["source_id"] for source in evidence],
+             "continuation_chars": len(json.dumps(continuation, ensure_ascii=False)) if continuation else 0,
+             "history_is_evidence": False},
+        )
         if spec.platform == "cross_platform" and findings:
             base_payload["specialist_findings"] = findings
         if revision_feedback is not None:
@@ -2985,6 +3038,12 @@ class WeeklyOpsCouncil:
                 tier_rationale=self._effort_rationale(run),
                 initial_gaps=(self._audit_slice(audit, spec.platform) or {}).get("gaps") or (),
             )
+        self.db.record_agent_artifact(
+            run["tenant_id"], run["id"], spec.name, "specialist_working_memory",
+            {"memory": outcome.memory.injection(), "warnings": outcome.warnings,
+             "tool_calls_used": outcome.memory.tool_calls_used,
+             "replans_used": outcome.memory.replans_used},
+        )
         return {
             "result": outcome.result,
             "candidates": state["candidates"],
@@ -3060,6 +3119,11 @@ class WeeklyOpsCouncil:
             + " Note only rule names, thresholds, ids, and observed values relevant "
             "to the objective. Do not restate long excerpts."
         )
+        continuation = context_for_platform(
+            self.db.get_continuation_context(run["tenant_id"], run["id"]), spec.platform,
+        )
+        if continuation:
+            research_brief += " Historical context (not evidence): " + json.dumps(continuation, ensure_ascii=False)
         tool_calls_used = 0
         verified_notes = []
 
@@ -3497,6 +3561,9 @@ class WeeklyOpsCouncil:
             }
         if audit is not None:
             payload["evidence_audit"] = audit
+        continuation = self.db.get_continuation_context(run["tenant_id"], run_id)
+        if continuation is not None:
+            payload["continuation_context"] = continuation
         payload["specialist_plans"] = self._latest_plans(run)
         if revision_feedback is not None:
             payload["revision_feedback"] = revision_feedback

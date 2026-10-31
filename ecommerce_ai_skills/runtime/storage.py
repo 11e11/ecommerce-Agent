@@ -5050,6 +5050,7 @@ class Database:
         graph_version_id: str,
         graph_version_hash: str,
         skill_route: dict[str, Any] | None = None,
+        continuation_context: dict[str, Any] | None = None,
         metric_observation_ids: list[str] | None = None,
         origin: str = "manual",
         parent_daily_ops_run_id: str | None = None,
@@ -5086,6 +5087,13 @@ class Database:
                 ).fetchone()
                 if requester is None or requester["tenant_id"] != tenant_id:
                     raise ValidationError("requesting user does not belong to tenant")
+                if continuation_context is not None:
+                    parent = conn.execute(
+                        "SELECT status,review_status FROM agent_runs WHERE tenant_id=? AND id=?",
+                        (tenant_id, continuation_context["parent_run_id"]),
+                    ).fetchone()
+                    if parent is None or parent["status"] != "completed" or parent["review_status"] != "approved":
+                        raise ValidationError("follow-up requires a completed, approved parent in the same tenant")
                 conn.execute(
                     """INSERT INTO agent_runs(
                        id,tenant_id,idempotency_key,workflow,objective,evidence_json,platforms_json,
@@ -5131,6 +5139,14 @@ class Database:
                         (self._id(), tenant_id, run_id, None, "skill_route", 0,
                          json.dumps(skill_route, ensure_ascii=False, sort_keys=True), now),
                     )
+                if continuation_context is not None:
+                    conn.execute(
+                        """INSERT INTO agent_artifacts(
+                           id,tenant_id,run_id,task_id,kind,attempt,content_json,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?)""",
+                        (self._id(), tenant_id, run_id, None, "continuation_context", 0,
+                         json.dumps(continuation_context, ensure_ascii=False, sort_keys=True), now),
+                    )
                 conn.execute(
                     """INSERT INTO agent_events(
                        id,tenant_id,run_id,task_id,event_type,payload_json,created_at
@@ -5167,6 +5183,7 @@ class Database:
                 or existing.get("parent_daily_ops_run_id") != parent_daily_ops_run_id
                 or existing.get("parent_daily_ops_attempt") != parent_daily_ops_attempt
                 or self.get_agent_route(tenant_id, existing["id"]) != skill_route
+                or self.get_continuation_context(tenant_id, existing["id"]) != continuation_context
             ):
                 raise ConflictError("idempotency key was already used with a different agent run")
             return existing, True
@@ -5180,6 +5197,15 @@ class Database:
         if row is None:
             raise NotFoundError("agent run not found")
         return self._agent_run_dict(row)
+
+    def get_continuation_context(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT content_json FROM agent_artifacts
+                   WHERE tenant_id=? AND run_id=? AND kind='continuation_context'
+                   ORDER BY rowid DESC LIMIT 1""", (tenant_id, run_id),
+            ).fetchone()
+        return json.loads(row["content_json"]) if row else None
 
     def get_agent_route(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:

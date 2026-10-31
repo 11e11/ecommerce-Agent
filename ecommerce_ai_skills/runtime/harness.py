@@ -602,6 +602,7 @@ def run_specialist_harness(
             },
         )
         trace.event("task.plan.created", {"steps": len(plan["steps"]), "reason": reason})
+        trace.artifact("specialist_working_memory", {"phase": "planned", "memory": memory.injection()})
         return plan
 
     reflection = None
@@ -635,6 +636,10 @@ def run_specialist_harness(
             memory.open_questions = [question for question in memory.open_questions if question != step["question"]]
             trace.event("task.step.observed", {"round": round_index, "step_id": step["step_id"],
                                              "notes": len(observed), "tool_calls_used": memory.tool_calls_used})
+            trace.artifact("specialist_working_memory", {
+                "phase": "observed", "round": round_index, "step_id": step["step_id"],
+                "memory": memory.injection(),
+            })
         return notes
 
     notes = execute(plan, 0)

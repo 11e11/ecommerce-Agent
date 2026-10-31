@@ -12,7 +12,8 @@ from threading import Barrier
 import pytest
 
 import agent_outputs
-from ecommerce_ai_skills.runtime.api import RuntimeApplication, _Handler
+from ecommerce_ai_skills.runtime.api import RuntimeApplication
+from legacy_http import _Handler
 from ecommerce_ai_skills.runtime.agent_graphs import default_graph_definition
 from ecommerce_ai_skills.runtime.errors import (
     AuthorizationError,

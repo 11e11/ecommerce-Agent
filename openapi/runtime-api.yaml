@@ -1415,6 +1415,55 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+  /v1/agent-runs/{runId}/trace:
+    get:
+      summary: Read plans, bounded memory snapshots, context assembly and tool-call metadata
+      parameters:
+        - {$ref: '#/components/parameters/runId'}
+      responses:
+        '200':
+          description: Tenant-owned readable execution trace, without raw tool result payloads
+          content:
+            application/json:
+              schema: {type: object}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/agent-runs/{runId}/follow-ups:
+    post:
+      summary: Create a new run from feedback on a completed and approved parent
+      description: Requires operator. Preserves the parent, re-routes and re-audits inherited input evidence. Same source IDs in evidence replace parent snapshots. History is a bounded per-platform hypothesis summary, not citable evidence. Executes the full DAG only when the new run is explicitly executed. The bound graph version must still be published and compatible.
+      parameters:
+        - {$ref: '#/components/parameters/runId'}
+        - {$ref: '#/components/parameters/idempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [feedback]
+              properties:
+                feedback: {type: string, minLength: 1, maxLength: 1000}
+                objective: {type: string, minLength: 5, maxLength: 1000}
+                evidence:
+                  type: array
+                  items: {type: object}
+                evidence_import_ids:
+                  type: array
+                  items: {type: string}
+      responses:
+        '200':
+          description: New requested run, or an idempotent replay
+          content:
+            application/json:
+              schema: {type: object}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
   /v1/agent-runs/{runId}/events:
     get:
       summary: Read an incremental event page for a run
@@ -1446,7 +1495,7 @@ paths:
   /v1/agent-runs/{runId}/execute:
     post:
       summary: Execute the bound Domain Agent Graph and independent Reviewer
-      description: Requires operator or higher and a configured model provider. A deterministic Router snapshots selected Skills before execution. Evidence Analyst and platform specialists run in parallel, followed by an optional cross-platform controller, Manager, and Reviewer. Research roles can call only bounded read-only knowledge tools; a revision_required verdict can replay its target and downstream roles once. Manager and Reviewer have no tools.
+      description: Requires operator or higher and a configured model provider. A deterministic Router snapshots selected Skills before execution. Evidence Analyst audits input first, then platform specialists run in parallel, followed by an optional cross-platform controller, Manager, and Reviewer. Specialists can use bounded read-only knowledge and platform-pinned tenant-data tools. A revision_required verdict can replay its target and downstream roles once. Manager and Reviewer have no tools.
       parameters:
         - {$ref: '#/components/parameters/runId'}
       responses:

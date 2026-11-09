@@ -1,0 +1,352 @@
+{
+  "case_id": "held-03",
+  "split": "held_out",
+  "variant": "stage_one",
+  "feedback": "Shopify 的结论我接受，不用修改。Amazon 先维持广告预算，这次只修改它的库存建议。",
+  "dataset_sha256": "76752e1e095fb2c06776683fdd41fb1872241850f86da5ff55cb65d7e444340b",
+  "model": [
+    "deepseek_responses",
+    "deepseek-flash"
+  ],
+  "parent_run_id": "6f94d773-fa22-4697-a1ac-3b9d5cc0db8b",
+  "execution_contract_hash": "b47b8dfc0a5e4bd1dcbcf872c0cd317eba5752f0adb3c1dc1b7850658e246c61",
+  "run_id": "ef03b3ae-a9dd-4414-8923-ef544eda7b60",
+  "status": "completed",
+  "review_status": "approved",
+  "report": {
+    "evidence_approach": [
+      {
+        "approach": "Amazon 专员按五步计划执行：核对 amazon-sales 的七天 units_ordered 70、daily_units [10,9,11,10,10,8,12]、sessions 700 与 amazon-stock 的 fulfillable_quantity 12、lead_time_days 7 的字段与口径，据此推导日均需求约 10 件/天与可售约 1.2 天；确认 amazon-stock 无在途/待入库/采购记录，故补货数量与下单时点只作条件化表述；用 amazon-ads（spend 100、attributed_orders 10、attributed_sales 200）仅作需求构成说明，不进入库存测算；并声明 Shopify 侧无本平台证据的缺口。全部结论仅引用本平台 source_id，未引用平台政策、未使用知识检索、未计算跨平台指标。",
+        "platform": "amazon",
+        "sufficiency": "partial"
+      },
+      {
+        "approach": "Shopify 专员按五步计划执行：复核 shopify-product 仍为最新且完整（观测 2026-11-09，最近完整七天 sales 35、daily_units 5,4,6,5,5,4,6、stock_level 80、lead_time_days 7、advertising.spend 50 USD、attributed_sales 150 USD、title 与 description）；据此保留已认可的广告结论（缺曝光/点击/转化与活动维度，维持不增预算）与库存结论（观测日均 5 件×交期 7 天≈35 件，80 件约覆盖 16 天，缺在途与安全库存政策故不给确定采购数量）；确认 Amazon 侧无本平台证据并登记为数据缺口，不做跨平台比较。",
+        "platform": "shopify",
+        "sufficiency": "partial"
+      }
+    ],
+    "execution_gate": {
+      "eligible": false,
+      "reasons": [
+        "evidence_audit:unknown",
+        "amazon:partial",
+        "shopify:partial"
+      ]
+    },
+    "executive_summary": "本轮按用户反馈执行：Shopify 广告与库存结论原样保留、不重算；Amazon 广告维持“先核验效果、不增加预算”；仅重做 Amazon 库存建议。Amazon 侧仅依据给定报表：amazon-sales 显示最近完整七天 units_ordered 70、daily_units [10,9,11,10,10,8,12]、sessions 700（source_id: amazon-sales），据此日均需求约 10 件/天（70÷7，观测值直接推导）；amazon-stock 显示 fulfillable_quantity 12、lead_time_days 7（source_id: amazon-stock），可售天数约 1.2 天（12÷10，推导值），远低于 7 天补货提前期，属需立即补货的缺货风险。因 amazon-stock 缺在途库存、待入库数量与采购/补货记录，本轮不给出具体补货件数与下单日期，只给出条件性补货建议与需补充核验的数据项。Shopify 侧保留原结论：广告 spend 50 USD、attributed_sales 150 USD 仅够初步核验，维持不增预算；库存 stock_level 80 对观测日均约 5 件、交期 7 天，短期可覆盖，但缺在途与安全库存政策。证据审计 adequacy 为 unknown，且 cross-platform comparison blocked（fewer than two platforms expose metric observations），两平台指标分列陈述、不合并、不换算。所有外部写入、预算调整、采购下单与客户消息均需人工审批。",
+    "knowledge_evidence": [],
+    "limitations": [
+      "证据审计 adequacy 为 unknown（Analyst judgement unavailable or invalid; deterministic audit retained），结论需人工复核。",
+      "证据审计显示 cross-platform comparison blocked（fewer than two platforms expose metric observations），Amazon 与 Shopify 同款商品的销量、库存、广告指标不可直接对比；本报告未计算任何跨平台指标。",
+      "Amazon 库存建议缺在途库存、待入库数量与采购/补货记录（amazon-stock 无对应 source_id），无法确定补货件数与下单时点，只能给条件性建议。",
+      "amazon-stock 缺 IPI、库龄、仓储限制等库存健康字段，无法评估仓储与库龄风险。",
+      "amazon-sales 仅覆盖最近完整七天，缺更长周期销量历史，需求预测与安全库存稳定性有限；缺服务水平（service_level）业务确认值，安全库存测算只能使用默认假设。",
+      "两平台广告均缺曝光、点击、转化次数与活动/关键词维度明细（amazon-ads 仅搜索词汇总级；shopify-product 仅 spend 与 attributed_sales），广告效果核验只能停留在汇总层面。",
+      "Shopify 报表未提供广告归因口径说明，attributed_sales=150 与 sales=35 的关系需核验。",
+      "Shopify 缺在途库存数量、安全库存政策与补货周期参数，库存建议只能基于观测日均与交期推算。",
+      "两平台均缺 keywords、competitor_listings、market 输入，listing 优化缺少关键词与竞品依据，仅能做有限观察。",
+      "缺退货、客户服务与合规（认证/政策）证据，未评估相关风险。",
+      "Amazon 专员指出无任何 Shopify source_id，Shopify 专员指出无任何 Amazon source_id；本报告以证据目录中实际存在的 source_id 为准，两平台建议各自仅引用本平台输入。",
+      "所有外部写入、预算调整、采购下单、listing 发布与客户消息均需人工审批，本报告仅提出分析与核验步骤。"
+    ],
+    "priorities": [
+      {
+        "action_type": "analysis",
+        "advice_id": "amazon:inventory:1",
+        "budget_change": "not_applicable",
+        "category": "inventory",
+        "confidence": "medium",
+        "downstream_action": "今日内核对在途库存、待入库数量与未结采购订单，确认净缺口后再下采购单；补货量按“覆盖提前期需求 + 安全库存 − 现有可售 − 在途”计算，安全库存与服务水平为假设参数需业务确认；任何采购下单需人工审批。",
+        "evidence_refs": [
+          "amazon-sales",
+          "amazon-stock"
+        ],
+        "expected_impact": "在断货前明确补货时点与数量依据；避免在未知在途库存下盲目下单或错过补货窗口。",
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "platforms": [
+          "amazon"
+        ],
+        "rank": 1,
+        "recommended_owner": "platform_amazon_operator",
+        "requires_approval": true,
+        "title": "Amazon 库存（本轮唯一修改项）：可售 12 件仅覆盖约 1.2 天，短于 7 天交期，先核验在途与采购记录再定补货量",
+        "why_now": "amazon-sales 显示最近完整七天 units_ordered 70、daily_units [10,9,11,10,10,8,12]，日均 70÷7=10 件/天（观测值直接推导）；amazon-stock 显示 fulfillable_quantity 12、lead_time_days 7，覆盖天数 12÷10=1.2 天（推导值），明显短于 7 天交期，断货风险最高。因缺在途库存、待入库数量与采购/补货记录，不给出确定采购数量，先核验净缺口与供应商交期，再据核验结果确定补货量。"
+      },
+      {
+        "action_type": "analysis",
+        "advice_id": "amazon:advertising:1",
+        "budget_change": "no_increase",
+        "category": "advertising",
+        "confidence": "medium",
+        "downstream_action": "拉取活动/预算层级与完整 Search Term Report 字段（展示、点击、CPC、转化率）做效果核验；预算不变，任何预算调整需人工审批。",
+        "evidence_refs": [
+          "amazon-ads",
+          "amazon-sales"
+        ],
+        "expected_impact": "在不增加预算的前提下确认该搜索词效果是否稳定，为后续是否调整预算提供依据。",
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "platforms": [
+          "amazon"
+        ],
+        "rank": 2,
+        "recommended_owner": "platform_amazon_operator",
+        "requires_approval": true,
+        "title": "Amazon 广告：ACOS 50%、单次归因订单成本 10 USD，仅一个搜索词贡献全部花费，维持预算并先核验效果",
+        "why_now": "amazon-ads 显示最近完整七天 spend 100 USD、attributed_orders 10、attributed_sales 200 USD，唯一搜索词“桌面收纳架”spend 100/orders 10，即 ACOS=100/200=50%、单次归因订单成本=100/10=10 USD（报表字段直接推导）；amazon-sales 同期 units_ordered 70，广告归因订单占 14.3%（10/70，同平台内计算）。花费集中于单一搜索词且缺活动/预算层级与完整 Search Term Report 字段，应先核验转化与花费稳定性，核验通过前不追加预算。"
+      },
+      {
+        "action_type": "analysis",
+        "advice_id": "shopify:advertising:1",
+        "budget_change": "no_increase",
+        "category": "advertising",
+        "confidence": "medium",
+        "downstream_action": "补齐曝光/点击/转化与活动维度数据并核对归因口径；预算不变，任何预算调整需人工审批。",
+        "evidence_refs": [
+          "shopify-product"
+        ],
+        "expected_impact": "确认 Shopify 广告效果是否真实可归因，避免在口径不明时调整预算。",
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "platforms": [
+          "shopify"
+        ],
+        "rank": 3,
+        "recommended_owner": "platform_shopify_operator",
+        "requires_approval": true,
+        "title": "Shopify 广告：spend 50 / attributed_sales 150 仅够初步核验，维持预算并补齐曝光点击转化明细",
+        "why_now": "shopify-product 显示最近完整七天 advertising.spend=50 USD、attributed_sales=150 USD，但缺曝光、点击、转化次数与活动/关键词维度明细，无法判断 ROAS 是否由个别词或活动拉动；且 attributed_sales=150 与 sales=35 的归因口径需核验。故预算不变，先补齐并核对明细与归因口径。"
+      },
+      {
+        "action_type": "analysis",
+        "advice_id": "shopify:inventory:1",
+        "budget_change": "not_applicable",
+        "category": "inventory",
+        "confidence": "medium",
+        "downstream_action": "核验在途数量与安全库存政策，再决定补货时点与数量；任何采购下单需人工审批。",
+        "evidence_refs": [
+          "shopify-product"
+        ],
+        "expected_impact": "明确 Shopify 补货时点与数量依据，避免在未知在途与安全库存下误判。",
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "platforms": [
+          "shopify"
+        ],
+        "rank": 4,
+        "recommended_owner": "platform_shopify_operator",
+        "requires_approval": true,
+        "title": "Shopify 库存：stock_level 80 对七天日均约 5 件、交期 7 天，短期可覆盖但需核验在途与安全库存政策",
+        "why_now": "shopify-product 显示 stock_level=80、lead_time_days=7、七天 daily_units 5,4,6,5,5,4,6（合计 sales=35，日均 5 件，观测值）。按观测日均 5 件×交期 7 天≈35 件覆盖交期需求，现有 80 件可覆盖约 16 天（80÷5，基于观测值的推算，非平台规则）。报表未提供在途库存、安全库存政策与补货周期，无法给出确定采购数量，先核验在途与安全库存设定。"
+      },
+      {
+        "action_type": "analysis",
+        "advice_id": "amazon+shopify:other:1",
+        "budget_change": "not_applicable",
+        "category": "other",
+        "confidence": "low",
+        "downstream_action": "补充目标关键词、目标市场与竞品 listing 输入后，分别评估两平台标题与描述；任何 listing 发布需人工审批。",
+        "evidence_refs": [
+          "amazon-product",
+          "shopify-product"
+        ],
+        "expected_impact": "为后续 listing 优化建立可核验的输入基础，避免臆造关键词或卖点。",
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "platforms": [
+          "amazon",
+          "shopify"
+        ],
+        "rank": 5,
+        "recommended_owner": "human_operator",
+        "requires_approval": true,
+        "title": "两平台 listing 标题与描述信息量偏薄，关键词与竞品输入缺失，仅做有限观察",
+        "why_now": "amazon-product 标题“Acme M1 桌面收纳架”、五点仅“金属材质”“桌面收纳”两条；shopify-product 标题“Acme M1 桌面收纳架”、描述“金属桌面收纳架”。两平台均缺 keywords、competitor_listings、market 输入，无法给出关键词优化或长度合规结论；建议补充目标关键词、目标市场与竞品 listing 后，分别按各平台要求评估，不跨平台套用规则。"
+      }
+    ],
+    "requirement_version": 2,
+    "revision_changes": [
+      {
+        "advice_id": "amazon:inventory:1",
+        "status": "updated"
+      },
+      {
+        "advice_id": "amazon:advertising:1",
+        "status": "preserved"
+      },
+      {
+        "advice_id": "shopify:advertising:1",
+        "status": "preserved"
+      },
+      {
+        "advice_id": "shopify:inventory:1",
+        "status": "preserved"
+      },
+      {
+        "advice_id": "amazon+shopify:other:1",
+        "status": "preserved"
+      }
+    ],
+    "risks": [
+      {
+        "evidence_refs": [
+          "amazon-stock",
+          "amazon-sales"
+        ],
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "mitigation": "立即核实在途/待入库数量与供应商交期，据核验结果确定补货量；不在未知在途库存下臆造固定采购数量。",
+        "platforms": [
+          "amazon"
+        ],
+        "risk": "Amazon FBA 可售 12 件按报表日均约 10 件/天仅覆盖约 1.2 天，短于 7 天交期，存在断货风险。"
+      },
+      {
+        "evidence_refs": [
+          "amazon-ads",
+          "amazon-sales",
+          "amazon-stock"
+        ],
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "mitigation": "在现有预算内拉取更细粒度报表核验转化与花费稳定性，核验通过前不追加预算，也不放量。",
+        "platforms": [
+          "amazon"
+        ],
+        "risk": "Amazon 广告花费全部集中于单一搜索词“桌面收纳架”，缺活动/预算层级与完整 Search Term Report 字段，效果稳定性未核验；若在缺货期放量将为无货可发的流量付费。"
+      },
+      {
+        "evidence_refs": [
+          "shopify-product"
+        ],
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "mitigation": "补齐明细并核对归因口径后再评估；预算不变，任何调整需人工审批。",
+        "platforms": [
+          "shopify"
+        ],
+        "risk": "Shopify 广告缺曝光/点击/转化与活动维度明细，且 attributed_sales=150 与 sales=35 的归因口径未说明，ROAS 判断可能失真。"
+      },
+      {
+        "evidence_refs": [
+          "amazon-stock",
+          "shopify-product"
+        ],
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "mitigation": "先核验在途数量、供应商交期与安全库存设定，再据核验结果确定补货时点与数量。",
+        "platforms": [
+          "amazon",
+          "shopify"
+        ],
+        "risk": "两平台库存均缺在途库存与补货/采购记录，Shopify 另缺安全库存政策，无法确定补货数量。"
+      },
+      {
+        "evidence_refs": [
+          "amazon-sales",
+          "amazon-stock",
+          "amazon-ads",
+          "shopify-product"
+        ],
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "mitigation": "两平台指标分列陈述，不计算跨平台汇总或比率；如需对比，先补齐同口径、同时间粒度的指标定义与归因说明。",
+        "platforms": [
+          "amazon",
+          "shopify"
+        ],
+        "risk": "证据审计 adequacy 为 unknown 且 cross-platform comparison blocked（fewer than two platforms expose metric observations），两平台指标口径不同，若被误用于跨平台对比将产生错误结论。"
+      },
+      {
+        "evidence_refs": [
+          "amazon-product",
+          "shopify-product"
+        ],
+        "knowledge_citations": [],
+        "metric_claim": {
+          "observation_refs": [],
+          "operation": "none"
+        },
+        "mitigation": "补充目标关键词、目标市场与竞品 listing 后再分别评估；不跨平台套用规则，不臆造关键词。",
+        "platforms": [
+          "amazon",
+          "shopify"
+        ],
+        "risk": "两平台 listing 标题与描述信息量偏薄，且缺 keywords、competitor_listings、market 输入，优化建议可能缺乏依据。"
+      }
+    ]
+  },
+  "rule_checks": [
+    {
+      "name": "revision_scope",
+      "passed": true
+    },
+    {
+      "name": "budget_constraint",
+      "passed": true
+    }
+  ],
+  "latency_ms": 67297,
+  "model_calls": 11,
+  "input_tokens": 79877,
+  "output_tokens": 12739,
+  "token_usage_incomplete": false,
+  "tool_calls": 0,
+  "specialists_executed": [
+    "platform_amazon_operator",
+    "platform_shopify_operator"
+  ],
+  "parsed_update": {
+    "categories": [
+      "inventory"
+    ],
+    "feedback": "Shopify 的结论我接受，不用修改。Amazon 先维持广告预算，这次只修改它的库存建议。",
+    "forbid_budget_increase": true,
+    "needs_clarification": false,
+    "preserve_platforms": [
+      "shopify"
+    ],
+    "question": "",
+    "target_platform": "amazon"
+  },
+  "semantic_judge": {
+    "requirements_addressed": true,
+    "text_metadata_consistent": true,
+    "no_new_unsupported_facts": true,
+    "reason": "反馈要求：Shopify 结论保留、Amazon 广告维持预算、仅改 Amazon 库存建议。修订版 revision_changes 明确 amazon:inventory:1 为 updated，其余四条 preserved；Amazon 广告仍为 budget_change=no_increase、标题“维持预算并先核验效果”，未实质改动；Shopify 广告/库存文字与原版一致，符合要求。文本与元数据一致：Amazon 库存 category=inventory、budget_change=not_applicable，正文只谈补货核验，未提预算；广告条目 budget_change=no_increase 与“不追加预算”表述吻合。算术正确且透明：70÷7=10 件/天、12÷10=1.2 天、ACOS=100/200=50%、单次订单成本=100/10=10 USD、10/70≈14.3%、Shopify 80÷5≈16 天，均为对已给数字的推导并标注“推导值”。未新增无依据的业务事实：补货量仅作条件化表述（“覆盖提前期需求+安全库存−现有可售−在途”），并明确安全库存/服务水平为假设参数需业务确认，未给出确定采购件数或下单日期；在途、IPI、库龄等缺失项均列入 limitations 而非编造。证据审计 adequacy=unknown、cross-platform blocked、requirement_version=2 等均与 system_context 一致，属系统元数据而非虚构店铺观察。",
+    "passed": true
+  },
+  "semantic_judge_protocol": 2
+}

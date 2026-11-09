@@ -78,6 +78,9 @@ def main():
               '- 范围保持检查针对 priorities 中的建议对象；摘要、风险和限制会重新综合，由语义评分与系统审核检查。',
               '- 执行失败计为端到端未通过，但不将其解释为已经生成报告的范围错误；请结合执行错误列与逐条原因阅读。',
               '- 未进行局部重算、长会话或跨会话记忆优化。', '',
+              '- 生成与评分使用同一型号模型，可能共享偏差；LLM语义合格不等于独立人工真值。',
+              '- 开发评分补齐审计和 Skill 上下文后重评一次，旧评分保存在 semantic_judge_history；保留测试没有重复评分。',
+              '- 两组语义评分都可能通过，但基线仍改写非目标建议，因此“保持不变”以规则对象比较为准。', '',
               f"缺失记录：{', '.join(missing) if missing else '无'}", '']
     (folder/'summary.json').write_text(json.dumps(groups,ensure_ascii=False,indent=2),encoding='utf-8')
     (folder/'README.md').write_text('\n'.join(lines),encoding='utf-8')

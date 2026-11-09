@@ -1,0 +1,17 @@
+{
+  "case_id": "dev-01",
+  "split": "development",
+  "variant": "stage_one",
+  "feedback": "Amazon 暂时不增加广告预算，只修改它的库存建议，Shopify 保持原样。",
+  "dataset_sha256": "76752e1e095fb2c06776683fdd41fb1872241850f86da5ff55cb65d7e444340b",
+  "model": [
+    "deepseek_responses",
+    "deepseek-flash"
+  ],
+  "parent_run_id": "5392c34c-2fbd-4783-9fb9-4e9b23529ddf",
+  "run_id": "70f4b709-7737-494b-bd02-c8322176724a",
+  "status": "error",
+  "error_type": "ExternalServiceError",
+  "error": "DeepSeek structured output was not valid JSON: {\"objective_restatement\": \"以 Shopify 市场运营者身份，仅基于本平台已提供的 Shopify 商品报表（shopify-product）复核该店铺同款商品 Acme M1 的销量、listing 标题与描述可用信息，先核验广告效果、不增加预算，并依据销量、库存与交期给出 Shopify 专属的广告与库存建议；因用户要求 Shopify 保持原样，本次运营只复核不改",
+  "latency_ms": 74109
+}

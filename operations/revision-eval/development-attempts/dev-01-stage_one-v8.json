@@ -1,0 +1,17 @@
+{
+  "case_id": "dev-01",
+  "split": "development",
+  "variant": "stage_one",
+  "feedback": "Amazon 暂时不增加广告预算，只修改它的库存建议，Shopify 保持原样。",
+  "dataset_sha256": "76752e1e095fb2c06776683fdd41fb1872241850f86da5ff55cb65d7e444340b",
+  "model": [
+    "deepseek_responses",
+    "deepseek-flash"
+  ],
+  "parent_run_id": "27fee1e4-18ce-4e47-bccf-12ddb3eaacf3",
+  "run_id": "bf502251-5eee-4965-8382-569f55cbc6b0",
+  "status": "error",
+  "error_type": "ExternalServiceError",
+  "error": "agent output omitted required evidence_refs",
+  "latency_ms": 34750
+}

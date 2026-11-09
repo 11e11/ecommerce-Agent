@@ -1,0 +1,86 @@
+{
+  "development": {
+    "baseline": {
+      "cases": 2,
+      "scope_passed": 0,
+      "budget_passed": 2,
+      "semantic_passed": 2,
+      "review_approved": 2,
+      "errors": 0,
+      "median_model_calls": 10.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 72844.0,
+      "median_output_tokens": 12806.5,
+      "median_latency_ms": 68789.5
+    },
+    "stage_one": {
+      "cases": 2,
+      "scope_passed": 2,
+      "budget_passed": 2,
+      "semantic_passed": 2,
+      "review_approved": 2,
+      "errors": 0,
+      "median_model_calls": 11.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 83238.5,
+      "median_output_tokens": 13017.0,
+      "median_latency_ms": 72109.0
+    }
+  },
+  "held_out": {
+    "baseline": {
+      "cases": 4,
+      "scope_passed": 0,
+      "budget_passed": 4,
+      "semantic_passed": 4,
+      "review_approved": 4,
+      "errors": 0,
+      "median_model_calls": 10.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 72321.0,
+      "median_output_tokens": 12657.0,
+      "median_latency_ms": 63218.5
+    },
+    "stage_one": {
+      "cases": 4,
+      "scope_passed": 4,
+      "budget_passed": 4,
+      "semantic_passed": 4,
+      "review_approved": 4,
+      "errors": 0,
+      "median_model_calls": 11.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 80398.0,
+      "median_output_tokens": 12849.5,
+      "median_latency_ms": 64742.5
+    }
+  },
+  "all": {
+    "baseline": {
+      "cases": 6,
+      "scope_passed": 0,
+      "budget_passed": 6,
+      "semantic_passed": 6,
+      "review_approved": 6,
+      "errors": 0,
+      "median_model_calls": 10.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 72338.5,
+      "median_output_tokens": 12780.5,
+      "median_latency_ms": 65359.5
+    },
+    "stage_one": {
+      "cases": 6,
+      "scope_passed": 6,
+      "budget_passed": 6,
+      "semantic_passed": 6,
+      "review_approved": 6,
+      "errors": 0,
+      "median_model_calls": 11.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 81502.5,
+      "median_output_tokens": 12863.5,
+      "median_latency_ms": 66539.0
+    }
+  }
+}

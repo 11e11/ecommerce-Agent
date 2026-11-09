@@ -1,0 +1,271 @@
+{
+  "case_id": "held-01-stage_one",
+  "run_id": "e4906f9f-aeed-458c-a1c0-a7bf5fbe5ea0",
+  "feedback": "Amazon 广告预算先别加了，请仅重写 Amazon 库存这一条，Shopify 那边不要动。",
+  "task_state": {
+    "budget_caps": {
+      "amazon": "no_increase"
+    },
+    "latest_update": {
+      "categories": [
+        "inventory"
+      ],
+      "feedback": "Amazon 广告预算先别加了，请仅重写 Amazon 库存这一条，Shopify 那边不要动。",
+      "forbid_budget_increase": true,
+      "needs_clarification": false,
+      "preserve_platforms": [
+        "shopify"
+      ],
+      "question": "",
+      "target_platform": "amazon"
+    },
+    "objective": "比较 Amazon 和 Shopify 同款商品的销量、listing 标题和五点描述，给出广告与库存建议。 每个平台各给一条广告和一条库存建议，共四条，平台建议不要合并。广告先核验效果，不增加预算。 只依据给定报表提出分析建议，不引用平台政策，不使用知识检索工具。每条只引用本平台输入数据，不计算跨平台指标。",
+    "platforms": [
+      "amazon",
+      "shopify"
+    ],
+    "version": 2
+  },
+  "agents": [
+    {
+      "name": "evidence_analyst",
+      "role": "evidence_analyst",
+      "status": "completed",
+      "result": null
+    },
+    {
+      "name": "platform_amazon_operator",
+      "role": "platform_specialist",
+      "status": "completed",
+      "result": null
+    },
+    {
+      "name": "platform_shopify_operator",
+      "role": "platform_specialist",
+      "status": "completed",
+      "result": null
+    },
+    {
+      "name": "cross_platform_controller",
+      "role": "cross_controller",
+      "status": "completed",
+      "result": null
+    },
+    {
+      "name": "store_manager",
+      "role": "manager",
+      "status": "completed",
+      "result": null
+    },
+    {
+      "name": "operations_reviewer",
+      "role": "reviewer",
+      "status": "completed",
+      "result": null
+    }
+  ],
+  "checks": [
+    {
+      "checks": [
+        {
+          "name": "revision_scope",
+          "passed": true
+        },
+        {
+          "name": "budget_constraint",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "loop_events": [
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "plan",
+        "seconds_left": 240.0,
+        "sequence": 1,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "plan",
+        "seconds_left": 240.0,
+        "sequence": 1,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 233.36,
+        "sequence": 2,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 233.235,
+        "sequence": 3,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 233.094,
+        "sequence": 4,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 232.969,
+        "sequence": 5,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "reflect",
+        "seconds_left": 232.875,
+        "sequence": 6,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 232.765,
+        "sequence": 2,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 232.656,
+        "sequence": 3,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 232.547,
+        "sequence": 4,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 232.437,
+        "sequence": 5,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "act",
+        "seconds_left": 232.343,
+        "sequence": 6,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "reflect",
+        "seconds_left": 232.25,
+        "sequence": 7,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "final",
+        "seconds_left": 229.375,
+        "sequence": 7,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.transition",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "final",
+        "seconds_left": 228.187,
+        "sequence": 8,
+        "tool_calls_left": 0
+      }
+    },
+    {
+      "type": "task.loop.stopped",
+      "payload": {
+        "agent_name": "platform_shopify_operator",
+        "attempt": 1,
+        "phase": "stopped",
+        "reason": "tool call budget exhausted",
+        "sequence": 7,
+        "tool_calls_used": 0
+      }
+    },
+    {
+      "type": "task.loop.stopped",
+      "payload": {
+        "agent_name": "platform_amazon_operator",
+        "attempt": 1,
+        "phase": "stopped",
+        "reason": "tool call budget exhausted",
+        "sequence": 8,
+        "tool_calls_used": 0
+      }
+    }
+  ],
+  "note": "Real LLM role outputs. Evaluation tool permissions are empty; this demonstrates feedback handling, not retrieval quality."
+}

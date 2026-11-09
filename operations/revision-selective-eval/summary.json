@@ -1,0 +1,143 @@
+{
+  "development": {
+    "baseline": {
+      "cases": 2,
+      "scope_passed": 0,
+      "budget_passed": 2,
+      "semantic_passed": 2,
+      "review_approved": 2,
+      "errors": 0,
+      "median_model_calls": 10.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 73743.0,
+      "median_output_tokens": 12593.0,
+      "median_latency_ms": 65797.0,
+      "reused_shopify_cases": 0,
+      "executed_amazon_cases": 2
+    },
+    "stage_one": {
+      "cases": 2,
+      "scope_passed": 2,
+      "budget_passed": 2,
+      "semantic_passed": 2,
+      "review_approved": 2,
+      "errors": 0,
+      "median_model_calls": 11.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 82014.5,
+      "median_output_tokens": 13255.5,
+      "median_latency_ms": 72617.5,
+      "reused_shopify_cases": 0,
+      "executed_amazon_cases": 2
+    },
+    "stage_two": {
+      "cases": 2,
+      "scope_passed": 2,
+      "budget_passed": 2,
+      "semantic_passed": 2,
+      "review_approved": 2,
+      "errors": 0,
+      "median_model_calls": 8.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 64378.5,
+      "median_output_tokens": 10254.5,
+      "median_latency_ms": 71249.5,
+      "reused_shopify_cases": 2,
+      "executed_amazon_cases": 2
+    }
+  },
+  "held_out": {
+    "baseline": {
+      "cases": 4,
+      "scope_passed": 0,
+      "budget_passed": 4,
+      "semantic_passed": 4,
+      "review_approved": 4,
+      "errors": 0,
+      "median_model_calls": 10.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 71674.5,
+      "median_output_tokens": 11975.0,
+      "median_latency_ms": 64578.5,
+      "reused_shopify_cases": 0,
+      "executed_amazon_cases": 4
+    },
+    "stage_one": {
+      "cases": 4,
+      "scope_passed": 4,
+      "budget_passed": 4,
+      "semantic_passed": 4,
+      "review_approved": 4,
+      "errors": 0,
+      "median_model_calls": 11.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 81921.5,
+      "median_output_tokens": 13270.0,
+      "median_latency_ms": 69976.5,
+      "reused_shopify_cases": 0,
+      "executed_amazon_cases": 4
+    },
+    "stage_two": {
+      "cases": 4,
+      "scope_passed": 4,
+      "budget_passed": 4,
+      "semantic_passed": 4,
+      "review_approved": 4,
+      "errors": 0,
+      "median_model_calls": 8.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 63726.0,
+      "median_output_tokens": 10320.0,
+      "median_latency_ms": 70914.0,
+      "reused_shopify_cases": 4,
+      "executed_amazon_cases": 4
+    }
+  },
+  "all": {
+    "baseline": {
+      "cases": 6,
+      "scope_passed": 0,
+      "budget_passed": 6,
+      "semantic_passed": 6,
+      "review_approved": 6,
+      "errors": 0,
+      "median_model_calls": 10.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 72862.5,
+      "median_output_tokens": 12363.0,
+      "median_latency_ms": 65797.0,
+      "reused_shopify_cases": 0,
+      "executed_amazon_cases": 6
+    },
+    "stage_one": {
+      "cases": 6,
+      "scope_passed": 6,
+      "budget_passed": 6,
+      "semantic_passed": 6,
+      "review_approved": 6,
+      "errors": 0,
+      "median_model_calls": 11.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 82014.5,
+      "median_output_tokens": 13255.5,
+      "median_latency_ms": 71281.5,
+      "reused_shopify_cases": 0,
+      "executed_amazon_cases": 6
+    },
+    "stage_two": {
+      "cases": 6,
+      "scope_passed": 6,
+      "budget_passed": 6,
+      "semantic_passed": 6,
+      "review_approved": 6,
+      "errors": 0,
+      "median_model_calls": 8.0,
+      "median_tool_calls": 0.0,
+      "median_input_tokens": 63828.5,
+      "median_output_tokens": 10320.0,
+      "median_latency_ms": 70914.0,
+      "reused_shopify_cases": 6,
+      "executed_amazon_cases": 6
+    }
+  }
+}

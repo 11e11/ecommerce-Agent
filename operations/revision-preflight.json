@@ -1,0 +1,67 @@
+{
+  "checked_at": "2026-11-09T11:16:13.638660+00:00",
+  "checks": {
+    "embedding": {
+      "status": "passed",
+      "details": {
+        "model": "BAAI/bge-m3",
+        "count": 2,
+        "dimension": 1024
+      },
+      "duration_ms": 3406
+    },
+    "rerank": {
+      "status": "passed",
+      "details": {
+        "model": "BAAI/bge-reranker-v2-m3",
+        "count": 2,
+        "relevant_document_first": true
+      },
+      "duration_ms": 3078
+    },
+    "milvus": {
+      "status": "passed",
+      "details": {
+        "collection_exists": true,
+        "hybrid_schema": true,
+        "statistics": {
+          "row_count": 2125
+        }
+      },
+      "duration_ms": 5594
+    },
+    "llm_configuration": {
+      "status": "passed",
+      "details": {
+        "provider": [
+          "deepseek_responses",
+          "deepseek-flash"
+        ],
+        "live_call": false
+      },
+      "duration_ms": 0
+    },
+    "llm_live": {
+      "status": "passed",
+      "details": {
+        "provider": [
+          "deepseek_responses",
+          "deepseek-flash"
+        ],
+        "live_call": true,
+        "structured_output_valid": true
+      },
+      "duration_ms": 3375
+    },
+    "web": {
+      "status": "passed",
+      "details": {
+        "url": "http://127.0.0.1:8787/app",
+        "status": 200
+      },
+      "duration_ms": 1641
+    }
+  },
+  "stage_one_started": false,
+  "llm_live_verified": true
+}

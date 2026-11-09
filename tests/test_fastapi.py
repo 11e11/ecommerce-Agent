@@ -76,7 +76,7 @@ def test_agent_run_follow_up_trace_and_cross_tenant_isolation(http_runtime):
     sources = [{"source_id": "amazon", "platform": "amazon", "source_type": "amazon_listing",
                 "observed_at": datetime.now(timezone.utc).isoformat(), "data": {"title": "sample"}}]
     response = client.post("/v1/agent-runs", headers={"Idempotency-Key": "first"}, json={
-        "workflow": "weekly_ops", "objective": "优化 Amazon listing title", "evidence": sources})
+        "workflow": "weekly_ops", "objective": "优化 Amazon listing title", "evidence": sources, "revision_support": False})
     assert response.status_code == 200, response.text
     first = response.json()["id"]
     assert client.post(f"/v1/agent-runs/{first}/execute").json()["run"]["status"] == "completed"

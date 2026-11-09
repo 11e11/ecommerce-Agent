@@ -30,6 +30,7 @@ from .auth import AuthService
 from .agent_graphs import AgentGraphService, STRICT_TOOL_POLICY
 from . import harness
 from .agent_loop import assemble_context
+from . import requirements
 from .continuations import build_continuation, context_for_platform, execution_trace
 from .evidence_audit import audit_evidence
 
@@ -2100,6 +2101,7 @@ class WeeklyOpsCouncil:
         parent_daily_ops_attempt: int | None = None,
         parent_daily_ops_lease_token: str | None = None,
         continuation_context: dict[str, Any] | None = None,
+        revision_support: bool = False,
     ) -> dict[str, Any]:
         self.auth.require(principal, "operator")
         graph_version = self.graph_service.resolve_published(principal, graph_version_id)
@@ -2143,10 +2145,24 @@ class WeeklyOpsCouncil:
         objective, evidence, platforms = self.validate_request(
             workflow, objective, [*inline_evidence, *imported_evidence, *metric_evidence]
         )
-        route = SkillRouter(
+        router = SkillRouter(
             self.skill_loader._root(),
             json.loads((self.skill_loader._root().parent / "ontology.json").read_text(encoding="utf-8")),
-        ).select(objective, platforms)
+        )
+        state = (continuation_context or {}).get('task_state')
+        route = router.select(state['objective'] if state else objective, platforms)
+        if state and state.get('latest_update'):
+            update = state['latest_update']
+            queries = {'inventory': 'FBA 库存 补货 安全库存', 'advertising': 'PPC 广告 ACOS', 'other': state['objective']}
+            selected = []
+            for category in update['categories']:
+                targeted = router.select(queries[category], [update['target_platform']])
+                selected.extend(targeted['by_platform'][update['target_platform']])
+            route['by_platform'][update['target_platform']] = list(dict.fromkeys(selected))
+            route['skills'] = list(dict.fromkeys(s for skills in route['by_platform'].values() for s in skills))
+        if revision_support and continuation_context is None:
+            continuation_context = {'task_state': requirements.initial_state(objective, platforms),
+                                    'root_objective': objective, 'parent_run_id': None}
         run, replayed = self.db.create_agent_run(
             principal.tenant_id,
             principal.user_id,
@@ -2238,6 +2254,39 @@ class WeeklyOpsCouncil:
         if old["status"] != "completed" or old["review_status"] != "approved":
             raise ConflictError("follow-up requires a completed, approved parent run")
         context = build_continuation(parent, feedback)
+        previous_context = self.db.get_continuation_context(principal.tenant_id, parent_run_id) or {}
+        if previous_context.get('task_state'):
+            if objective is not None or evidence is not None or evidence_import_ids:
+                raise ValidationError('stage-one revisions support feedback only; start a new run to replace objectives or evidence')
+            if not idempotency_key or len(idempotency_key) > 200:
+                raise ValidationError('revision idempotency key is required and must be <= 200 characters')
+            fingerprint = hashlib.sha256(json.dumps(
+                [parent_run_id, feedback, objective, evidence, evidence_import_ids],
+                ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            with self.db.connect() as conn:
+                existing = conn.execute('SELECT id FROM agent_runs WHERE tenant_id=? AND idempotency_key=?',
+                                        (principal.tenant_id, idempotency_key)).fetchone()
+            if existing:
+                saved = self.db.get_continuation_context(principal.tenant_id, existing['id']) or {}
+                if saved.get('revision_request_fingerprint') != fingerprint:
+                    raise ConflictError('idempotency key used for different revision')
+                return self.db.get_agent_run(principal.tenant_id, existing['id'])
+            update = self.provider.complete(
+                agent_name='requirement_router',
+                instructions='Interpret the feedback as a scoped revision to the current task. Use actual platform IDs from task_state. Return needs_clarification=true for vague dissatisfaction, multiple target platforms, or a scope that cannot be resolved. Never treat feedback as evidence. categories: advertising, inventory, other. preserve_platforms lists platforms explicitly requested unchanged. A no-budget-increase restriction does not prohibit discussing current advertising. Do not invent a restriction the user did not request.',
+                payload={'task_state': previous_context['task_state'], 'feedback': feedback},
+                output_schema=requirements.UPDATE_SCHEMA, safety_identifier=self._safety_identifier(principal))
+            state = requirements.update_state(previous_context['task_state'], update, feedback)
+            if state.get('status') == 'needs_clarification':
+                return state
+            parent_report = next(a['content'] for a in reversed(parent['artifacts']) if a['kind'] == 'weekly_ops_report')
+            target = state['latest_update']['target_platform']
+            if state['budget_caps'].get(target) and any(
+                target in p['platforms'] and p.get('budget_change') == 'increase'
+                and p.get('category') not in update['categories'] for p in parent_report['priorities']):
+                return {'status': 'needs_clarification', 'question': '原广告建议包含增加预算，是否允许同时修改该广告建议以满足新的预算限制？'}
+            context.update(task_state=state, parent_report=parent_report,
+                           revision_request_fingerprint=fingerprint)
         if isinstance(objective, str):
             context["root_objective"] = objective
         if evidence is not None and not isinstance(evidence, list):
@@ -2414,7 +2463,7 @@ class WeeklyOpsCouncil:
                 "plan_executed",
             }
         )
-        if {key for key in result if key not in BOOKKEEPING_KEYS} != required_top:
+        if {key for key in result if key not in BOOKKEEPING_KEYS | {'requirement_version', 'revision_changes'}} != required_top:
             raise ExternalServiceError("agent output fields did not match the required schema")
         valid_platforms = set(source_platforms.values()) | {"cross_platform"}
         if not manager:
@@ -2951,6 +3000,8 @@ class WeeklyOpsCouncil:
         )
         if continuation is not None:
             base_payload["continuation_context"] = continuation
+            if continuation.get('task_state'):
+                base_payload['current_task_state'] = continuation['task_state']
         offered = harness.allowed_tools_for(
             budget.name, tuple(spec.tool_policy.get("allowed_tools") or ())
         )
@@ -3625,6 +3676,10 @@ class WeeklyOpsCouncil:
         continuation = self.db.get_continuation_context(run["tenant_id"], run_id)
         if continuation is not None:
             payload["continuation_context"] = continuation
+        task_state = (continuation or {}).get('task_state')
+        if task_state:
+            payload['current_task_state'] = task_state
+            payload['revision_contract'] = 'Every priority must include category and budget_change describing its actual text. For a revision produce replacements for existing editable priorities, not a new report structure. Preserve restrictions, distinguish no increase from no discussion of advertising.'
         payload["specialist_plans"] = self._latest_plans(run)
         if revision_feedback is not None:
             payload["revision_feedback"] = revision_feedback
@@ -3632,10 +3687,19 @@ class WeeklyOpsCouncil:
             agent_name=spec.name,
             instructions=spec.instructions,
             payload=payload,
-            output_schema=MANAGER_SCHEMA,
+            output_schema=requirements.report_schema(MANAGER_SCHEMA) if task_state else MANAGER_SCHEMA,
             safety_identifier=safety_identifier,
         )
+        if task_state:
+            report = requirements.assign_advice_ids(report)
+            report['requirement_version'] = task_state['version']
+            if task_state.get('latest_update'):
+                report = requirements.scoped_merge(continuation['parent_report'], report, task_state)
         candidates = merge_tool_evidence(findings)
+        if task_state and task_state.get('latest_update'):
+            # Reused citations refer to immutable, previously validated snapshots,
+            # not to the historical prose as a new source.
+            candidates = list({e['source_id']: e for e in [*candidates, *continuation['parent_report'].get('knowledge_evidence', [])]}.values())
         used = validate_knowledge_citations(
             citation_entries(report, manager=True), candidates
         )
@@ -3685,6 +3749,13 @@ class WeeklyOpsCouncil:
     ) -> dict[str, Any]:
         self.db.start_agent_task(principal.tenant_id, run_id, spec.name)
         try:
+            continuation = self.db.get_continuation_context(principal.tenant_id, run_id) or {}
+            task_state = continuation.get('task_state')
+            checks = []
+            if task_state and task_state.get('latest_update'):
+                checks = requirements.rule_checks(continuation['parent_report'], report, task_state)
+                self.db.record_agent_artifact(principal.tenant_id, run_id, spec.name,
+                                              'revision_rule_checks', {'checks': checks})
             review = self._complete_recorded(spec, run,
                 agent_name=spec.name,
                 instructions=spec.instructions,
@@ -3705,17 +3776,26 @@ class WeeklyOpsCouncil:
                     "evidence_audit": audit,
                     "specialist_findings": findings,
                     "manager_report": report,
+                    'current_task_state': task_state,
+                    'revision_rule_checks': checks,
+                    'revision_review_instruction': 'Check that the text follows the user feedback and still-effective constraints, and agrees with category/budget_change metadata. Reject unsupported claims. Read latest_update.feedback and compare editable advice against the previous report when provided.',
+                    'previous_report': continuation.get('parent_report'),
                 },
                 output_schema=REVIEWER_SCHEMA,
                 safety_identifier=safety_identifier,
             )
+            if any(not c['passed'] for c in checks):
+                review.update(verdict='rejected', revision_target='none', revision_platform='')
+                review['issues'].append({'code': 'revision_rule_failed', 'message': 'Revision scope or budget checks failed',
+                    'severity': 'critical', 'evidence_refs': report['priorities'][0]['evidence_refs'],
+                    'platforms': report['priorities'][0]['platforms']})
             self._validate_reviewer(
                 review,
                 source_platforms,
                 report,
                 extra_source_ids={
                     entry["source_id"] for entry in merge_tool_evidence(findings)
-                },
+                } | {entry['source_id'] for entry in report.get('knowledge_evidence', [])},
             )
             self.db.complete_agent_task(
                 principal.tenant_id,

@@ -2243,6 +2243,7 @@ document.body.addEventListener("click", event => {
       if (!$("detail-followup-message").value.trim()) { $("detail-followup-message").focus(); break; }
       act(button, async () => {
         const child = await api(`/v1/agent-runs/${id}/follow-ups`, {method: "POST", headers: {"Idempotency-Key": idempotency("ui-followup")}, json: {feedback: $("detail-followup-message").value.trim()}});
+        if (child.status === "needs_clarification") { showDetail("补充要求", child.question); return; }
         await api(`/v1/agent-runs/${child.id}/execute`, {method: "POST"});
         await loadRunDetail(child.id);
       }, "Agent Run 已完成。");

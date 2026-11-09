@@ -50,7 +50,8 @@ def build_continuation(parent: dict[str, Any], feedback: str) -> dict[str, Any]:
 def context_for_platform(context: dict[str, Any] | None, platform: str) -> dict[str, Any] | None:
     if context is None:
         return None
-    return dict(context) | {"previous_findings": [
+    isolated = {k: v for k, v in context.items() if k != 'parent_report'}
+    return isolated | {"previous_findings": [
         row for row in context.get("previous_findings", []) if row.get("platform") == platform
     ]}
 

@@ -13,6 +13,7 @@ class AgentRunRequest(BaseModel):
     evidence_import_ids: list[str] | None = None
     graph_version_id: str | None = None
     metric_observation_ids: list[str] | None = None
+    revision_support: bool = True
 
 
 class FollowUpRequest(BaseModel):

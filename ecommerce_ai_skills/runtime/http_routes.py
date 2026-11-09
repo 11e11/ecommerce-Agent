@@ -566,7 +566,7 @@ def post_v1_agent_runs(payload: AgentRunRequest, ctx: HTTPContext=Depends(get_co
     principal = ctx.principal
     request_id = ctx.request_id
     body = payload.model_dump(exclude_unset=True)
-    run = ctx.app.agent_runs.request(principal, str(body['workflow']), body['objective'], body.get('evidence'), ctx.headers.get('Idempotency-Key', ''), request_id, evidence_import_ids=body.get('evidence_import_ids'), graph_version_id=body.get('graph_version_id'), metric_observation_ids=body.get('metric_observation_ids'))
+    run = ctx.app.agent_runs.request(principal, str(body['workflow']), body['objective'], body.get('evidence'), ctx.headers.get('Idempotency-Key', ''), request_id, evidence_import_ids=body.get('evidence_import_ids'), graph_version_id=body.get('graph_version_id'), metric_observation_ids=body.get('metric_observation_ids'), revision_support=body.get('revision_support', True))
     return ctx._json(200, run, request_id)
 
 @router.post('/v1/daily-ops-schedules', summary='Create a Daily Ops schedule', tags=['daily-ops-schedules'])

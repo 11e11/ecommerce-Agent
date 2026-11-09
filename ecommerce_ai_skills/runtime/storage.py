@@ -5087,7 +5087,7 @@ class Database:
                 ).fetchone()
                 if requester is None or requester["tenant_id"] != tenant_id:
                     raise ValidationError("requesting user does not belong to tenant")
-                if continuation_context is not None:
+                if continuation_context is not None and continuation_context.get('parent_run_id'):
                     parent = conn.execute(
                         "SELECT status,review_status FROM agent_runs WHERE tenant_id=? AND id=?",
                         (tenant_id, continuation_context["parent_run_id"]),

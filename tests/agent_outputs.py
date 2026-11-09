@@ -252,6 +252,8 @@ def manager_output(payload: Mapping[str, Any]) -> dict[str, Any]:
             {
                 "rank": 1,
                 "title": "Review launch campaign efficiency",
+                "category": "advertising",
+                "budget_change": "no_increase",
                 "why_now": "The supplied weekly export shows current spend and sales.",
                 "evidence_refs": [primary],
                 "knowledge_citations": citation_for(payload),

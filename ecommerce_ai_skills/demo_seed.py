@@ -21,6 +21,8 @@ from .runtime.storage import Database
 class DemoSeedProvider:
     """Deterministic provider used only by an explicitly started Demo runtime."""
 
+    supports_requirement_revisions = False
+
     def configuration(self) -> tuple[str, str]:
         return "demo_seed", "demo-seed-v1"
 

@@ -117,7 +117,7 @@ SPECIALIST_SCHEMA: dict[str, Any] = {
                     "title": {"type": "string"},
                     "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
                     "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
                     # Tool-derived facts are only citable with the span they came
                     # from: the id alone proves existence, not attribution.
                     "knowledge_citations": {
@@ -205,7 +205,7 @@ MANAGER_SCHEMA: dict[str, Any] = {
                     "rank": {"type": "integer", "minimum": 1},
                     "title": {"type": "string"},
                     "why_now": {"type": "string"},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
                     "knowledge_citations": {
                         "type": "array",
                         "maxItems": 6,
@@ -259,7 +259,7 @@ MANAGER_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "risk": {"type": "string"},
                     "mitigation": {"type": "string"},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
                     "knowledge_citations": {
                         "type": "array",
                         "maxItems": 6,
@@ -1428,6 +1428,7 @@ class DeepSeekResponsesProvider:
         payload: dict[str, Any],
         output_schema: dict[str, Any],
         safety_identifier: str,
+        _repair_attempt: int = 0,
     ) -> dict[str, Any]:
         _, model = self.configuration()
         api_key = self._environment()[self.credential_env].strip()
@@ -1446,6 +1447,7 @@ class DeepSeekResponsesProvider:
             "input": json.dumps(payload, ensure_ascii=False, sort_keys=True),
             "reasoning": {"effort": "none"},
             "max_output_tokens": 8000,
+            "temperature": 0,
             "user": safety_identifier,
             "text": {
                 "format": {
@@ -1540,6 +1542,11 @@ class DeepSeekResponsesProvider:
                     structured, _ = json.JSONDecoder().raw_decode(candidate[start:])
                 except json.JSONDecodeError:
                     structured = None
+        schema_errors = list(Draft202012Validator(output_schema).iter_errors(structured)) if isinstance(structured, dict) else ['not an object']
+        if (structured is None or schema_errors) and _repair_attempt == 0:
+            return self.complete(agent_name=agent_name,
+                instructions=instructions + '\nThe previous response was not valid JSON matching the schema. Return valid JSON only, with all required fields and no code expressions. This is the only repair attempt.',
+                payload=payload, output_schema=output_schema, safety_identifier=safety_identifier, _repair_attempt=1)
         if structured is None:
             raise ExternalServiceError(
                 f"{self.provider_label} structured output was not valid JSON: "
@@ -1549,6 +1556,8 @@ class DeepSeekResponsesProvider:
             raise ExternalServiceError(
                 f"{self.provider_label} structured output was not an object"
             )
+        if schema_errors:
+            raise ExternalServiceError(f'{self.provider_label} structured output did not match JSON schema')
         return structured
 
     def research(
@@ -2273,7 +2282,7 @@ class WeeklyOpsCouncil:
                 return self.db.get_agent_run(principal.tenant_id, existing['id'])
             update = self.provider.complete(
                 agent_name='requirement_router',
-                instructions='Interpret the feedback as a scoped revision to the current task. Use actual platform IDs from task_state. Return needs_clarification=true for vague dissatisfaction, multiple target platforms, or a scope that cannot be resolved. Never treat feedback as evidence. categories: advertising, inventory, other. preserve_platforms lists platforms explicitly requested unchanged. A no-budget-increase restriction does not prohibit discussing current advertising. Do not invent a restriction the user did not request.',
+                instructions='Interpret the feedback as a scoped revision to the current task. Use actual platform IDs from task_state. Return needs_clarification=true for vague dissatisfaction, multiple target platforms, or a scope that cannot be resolved. Never treat feedback as evidence. categories lists ONLY explicitly editable advice categories: advertising, inventory, other. Constraints and editable scope are separate: mentioning that advertising budget must not increase sets forbid_budget_increase=true but does NOT add advertising to categories. If the user says only revise inventory, categories must be [inventory] even when an advertising budget constraint is also mentioned. preserve_platforms lists platforms explicitly requested unchanged. Do not invent a restriction the user did not request.',
                 payload={'task_state': previous_context['task_state'], 'feedback': feedback},
                 output_schema=requirements.UPDATE_SCHEMA, safety_identifier=self._safety_identifier(principal))
             state = requirements.update_state(previous_context['task_state'], update, feedback)
@@ -3101,7 +3110,7 @@ class WeeklyOpsCouncil:
             with _call_context(memory, _USAGE_SINK.get()):
                 return self.provider.complete(
                     agent_name=spec.name,
-                    instructions=spec.instructions + ' knowledge_citations may ONLY use source_id from knowledge_candidates, never a constraint ID, heading, or guessed ID. If no matching tool evidence exists use an empty knowledge_citations array and cite supplied input evidence_refs. Do not invent platform rules.',
+                    instructions=spec.instructions + ' knowledge_citations may ONLY use source_id from knowledge_candidates, never a constraint ID, heading, or guessed ID. If no matching tool evidence exists use an empty knowledge_citations array and cite supplied input evidence_refs. Do not invent platform rules. Never present a default service level, safety-stock buffer, demand growth, or procurement quantity as an observed fact. Label any assumption and show its derivation; when in-transit stock or policy inputs are missing, recommend verification rather than a definite purchase quantity.',
                     payload=model_context(enriched, "final"),
                     output_schema=final_schema,
                     safety_identifier=safety_identifier,
@@ -3593,8 +3602,16 @@ class WeeklyOpsCouncil:
                 payload["knowledge_candidates"] = [{"source_id": entry["source_id"], **entry["data"]} for entry in candidates]
                 payload["plan_executed"] = []
                 payload["evidence_sufficiency"] = {"level": "sufficient", "reason": "controller consolidates platform findings"}
-                result = self._complete_recorded(spec, run, agent_name=spec.name, instructions=spec.instructions,
-                    payload=payload, output_schema=SPECIALIST_SCHEMA, safety_identifier=safety_identifier)
+                cross_schema = json.loads(json.dumps(SPECIALIST_SCHEMA))
+                cross_schema['properties']['plan_executed']['maxItems'] = 0
+                cross_schema['properties']['platform']['enum'] = ['cross_platform']
+                cross_schema['properties']['findings']['items']['properties']['evidence_refs']['items']['enum'] = [
+                    *source_platforms, *(entry['source_id'] for entry in candidates)]
+                if not candidates:
+                    cross_schema['properties']['findings']['items']['properties']['knowledge_citations']['maxItems'] = 0
+                result = self._complete_recorded(spec, run, agent_name=spec.name,
+                    instructions=spec.instructions + ' You consolidate findings but do not execute a Specialist plan. plan_executed MUST be an empty array. Never claim another role\'s steps as your own.',
+                    payload=payload, output_schema=cross_schema, safety_identifier=safety_identifier)
                 outcome = {"result": result, "candidates": candidates, "plan": None}
             else:
                 outcome = self._run_specialist(
@@ -3704,11 +3721,23 @@ class WeeklyOpsCouncil:
         payload["specialist_plans"] = self._latest_plans(run)
         if revision_feedback is not None:
             payload["revision_feedback"] = revision_feedback
+        manager_schema = requirements.report_schema(MANAGER_SCHEMA) if task_state else json.loads(json.dumps(MANAGER_SCHEMA))
+        manager_schema['properties']['priorities']['items']['properties']['recommended_owner']['enum'] = sorted(valid_owners)
+        levels_for_schema = {str(row.get('platform')): (row.get('evidence_sufficiency') or {}).get('level', 'unknown')
+                             for row in findings.values() if row.get('platform') in self._marketplace_platforms(run)}
+        if levels_for_schema:
+            approach_schema = manager_schema['properties']['evidence_approach']
+            approach_schema.update(minItems=len(levels_for_schema), maxItems=len(levels_for_schema))
+            approach_schema['items'] = {'anyOf': [
+                {'type': 'object', 'additionalProperties': False, 'required': ['platform','approach','sufficiency'],
+                 'properties': {'platform': {'type':'string','const':platform}, 'approach': {'type':'string'},
+                                'sufficiency': {'type':'string','const':level}}}
+                for platform, level in levels_for_schema.items()]}
         report = self._complete_recorded(spec, run,
             agent_name=spec.name,
-            instructions=spec.instructions,
+            instructions=spec.instructions + ' Do not introduce numeric order quantities or thresholds without an evidence-grounded derivation and explicit assumptions. Unknown in-transit stock or safety policy requires a verification step, not an invented fixed purchase quantity.',
             payload=payload,
-            output_schema=requirements.report_schema(MANAGER_SCHEMA) if task_state else MANAGER_SCHEMA,
+            output_schema=manager_schema,
             safety_identifier=safety_identifier,
         )
         if task_state:
@@ -3777,6 +3806,18 @@ class WeeklyOpsCouncil:
                 checks = requirements.rule_checks(continuation['parent_report'], report, task_state)
                 self.db.record_agent_artifact(principal.tenant_id, run_id, spec.name,
                                               'revision_rule_checks', {'checks': checks})
+            review_schema = json.loads(json.dumps(REVIEWER_SCHEMA))
+            report_refs = sorted({ref for item in [*report['priorities'], *report['risks']] for ref in item['evidence_refs']})
+            review_schema['oneOf'] = [
+                {'properties': {'verdict': {'const': 'approved'}, 'issues': {'const': []},
+                                'revision_target': {'const': 'none'}, 'revision_platform': {'const': ''},
+                                'evidence_refs': {'const': report_refs}, 'limitations': {'const': report['limitations']}}},
+                {'properties': {'verdict': {'const': 'rejected'}, 'revision_target': {'const': 'none'}, 'revision_platform': {'const': ''}}},
+                {'properties': {'verdict': {'const': 'revision_required'}}, 'oneOf': [
+                    {'properties': {'revision_target': {'enum': ['manager', 'cross_controller']}, 'revision_platform': {'const': ''}}},
+                    {'properties': {'revision_target': {'const': 'platform_specialist'}, 'revision_platform': {'enum': self._marketplace_platforms(run)}}},
+                ]},
+            ]
             review = self._complete_recorded(spec, run,
                 agent_name=spec.name,
                 instructions=spec.instructions,
@@ -3802,7 +3843,7 @@ class WeeklyOpsCouncil:
                     'revision_review_instruction': 'Check that the text follows the user feedback and still-effective constraints, and agrees with category/budget_change metadata. Reject unsupported claims. Read latest_update.feedback and compare editable advice against the previous report when provided.',
                     'previous_report': continuation.get('parent_report'),
                 },
-                output_schema=REVIEWER_SCHEMA,
+                output_schema=review_schema,
                 safety_identifier=safety_identifier,
             )
             if any(not c['passed'] for c in checks):

@@ -622,8 +622,10 @@ def run_specialist_harness(
         observed_steps.clear()
         notes = []
         for step in current_plan["steps"]:
-            if memory.expired():
+            if memory.seconds_left <= 0:
                 break
+            if step.get('tools') and memory.tool_calls_left == 0:
+                continue
             trace.event("task.step.started", {"round": round_index, "step_id": step["step_id"]})
             try:
                 observed = list(loop.call("act", research_call,

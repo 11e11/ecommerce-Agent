@@ -105,6 +105,21 @@ def test_memory_bounded_even_with_oversized_plan_and_steps():
     assert memory.tool_calls_used == 2
 
 
+def test_zero_tool_budget_does_not_skip_steps_that_only_use_supplied_evidence():
+    from dataclasses import replace
+    budget = replace(harness.budget_for('standard'), max_tool_calls=0)
+    p = plan()
+    for step in p['steps']:
+        step['tools'] = []
+    result = harness.run_specialist_harness(
+        budget=budget, allowed_tools=[], gap_ids=[], platforms=['amazon'],
+        base_payload={'target_platform':'amazon'}, plan_call=lambda *_: p,
+        research_call=lambda *_: [], reflect_call=lambda payload, _: agent_outputs.reflection_output(payload),
+        final_call=lambda payload, _: {'evidence_sufficiency':payload['evidence_sufficiency'], 'plan_executed':payload['plan_executed']})
+    assert result.reflection['covered_steps'] == [1, 2]
+    assert all(s['outcome'] == 'done' for s in result.result['plan_executed'])
+
+
 def test_deadline_abstains_without_more_model_calls():
     def researcher(payload, memory):
         memory.started_monotonic = time.monotonic() - 999

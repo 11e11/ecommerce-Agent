@@ -55,3 +55,22 @@ def test_full_rerun_with_scoped_merge_and_idempotent_update(tmp_path):
     # Stage one deliberately reruns both Specialists.
     names = {name for name, kind, _ in provider.calls[before:] if kind == 'specialist'}
     assert {'platform_amazon_operator', 'platform_shopify_operator'} <= names
+
+
+def test_demo_http_keeps_legacy_behavior_and_cannot_claim_real_revision_support(tmp_path):
+    from fastapi.testclient import TestClient
+    from ecommerce_ai_skills.demo_seed import DemoSeedProvider
+    from ecommerce_ai_skills.runtime.api import create_app
+    app = RuntimeApplication(Database(tmp_path / 'demo.sqlite'), agent_provider=DemoSeedProvider())
+    credentials = app.bootstrap('Demo compatibility', 'demo@example.test')
+    source = {'source_id':'product', 'platform':'amazon', 'source_type':'amazon_listing',
+              'observed_at':datetime.now(timezone.utc).isoformat(), 'data':{'title':'sample'}}
+    with TestClient(create_app(app)) as client:
+        headers = {'Authorization':'Bearer '+credentials['api_key'], 'Idempotency-Key':'legacy-demo'}
+        body = {'workflow':'weekly_ops','objective':'优化 Amazon listing title','evidence':[source]}
+        response = client.post('/v1/agent-runs', headers=headers, json=body)
+        assert response.status_code == 200
+        assert client.post('/v1/agent-runs/'+response.json()['id']+'/execute', headers=headers).status_code == 200
+        body['revision_support'] = True
+        response = client.post('/v1/agent-runs', headers=headers, json=body)
+        assert response.status_code == 422

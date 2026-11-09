@@ -41,6 +41,9 @@ def main():
                 missing.append(path.name)
                 rows.append({'case_id':case['id'],'split':case['split'],'variant':variant,'status':'error','error':'missing'})
     groups = {}
+    contracts = {r.get('execution_contract_hash') for r in rows if r.get('execution_contract_hash')}
+    if len(contracts) > 1:
+        raise ValueError('Cannot compare results from different execution contracts')
     for split in ('development','held_out','all'):
         groups[split] = {v: aggregate([r for r in rows if r['variant']==v and (split=='all' or r['split']==split)])
                          for v in ('baseline','stage_one')}
@@ -52,7 +55,9 @@ def main():
              '|---|---|---|---|---|---|---|']
     for split, variants in groups.items():
         for variant, g in variants.items():
-            lines.append(f"| {split} | {variant} | {g['scope_passed']}/{g['cases']} | {g['budget_passed']}/{g['cases']} | {g['semantic_passed']}/{g['cases']} | {g['review_approved']}/{g['cases']} | {g['errors']} |")
+            split_label = {'development':'开发', 'held_out':'保留测试', 'all':'全部'}[split]
+            variant_label = {'baseline':'文本反馈基线', 'stage_one':'基础阶段'}[variant]
+            lines.append(f"| {split_label} | {variant_label} | {g['scope_passed']}/{g['cases']} | {g['budget_passed']}/{g['cases']} | {g['semantic_passed']}/{g['cases']} | {g['review_approved']}/{g['cases']} | {g['errors']} |")
     lines += ['', '## 执行开销', '', '工作流开销包含需求解释，排除单独的评测评分调用与共享首轮生成。token 是服务返回的已知用量；传输中断可能无法取得用量。基础阶段不做局部重算，不预期必然降本。', '',
               '| 变体 | 模型调用中位数 | 工具调用中位数 | 输入token中位数 | 输出token中位数 | 耗时中位数(ms) |',
               '|---|---|---|---|---|---|']
@@ -69,6 +74,9 @@ def main():
               '- 范围规则要求 A 库存的用户可见字段有变化，其他建议整个对象相同；措辞变化不代表质量提高，因此另列语义判定。',
               '- 此任务已提供完整样例事实，要求不检索平台政策；不用于衡量 RAG 或工具循环质量。',
               '- 初始开发中出现传输中断、规划平台编号及引用错误，已保留本地诊断；不计作正式六条反馈的质量样本。',
+              '- development-attempts 保留了契约修复前两条开发失败记录；正式保留测试在修复冻结后执行。',
+              '- 范围保持检查针对 priorities 中的建议对象；摘要、风险和限制会重新综合，由语义评分与系统审核检查。',
+              '- 执行失败计为端到端未通过，但不将其解释为已经生成报告的范围错误；请结合执行错误列与逐条原因阅读。',
               '- 未进行局部重算、长会话或跨会话记忆优化。', '',
               f"缺失记录：{', '.join(missing) if missing else '无'}", '']
     (folder/'summary.json').write_text(json.dumps(groups,ensure_ascii=False,indent=2),encoding='utf-8')

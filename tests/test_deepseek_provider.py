@@ -129,6 +129,7 @@ def test_request_uses_only_documented_deepseek_responses_fields() -> None:
         "input",
         "reasoning",
         "max_output_tokens",
+        "temperature",
         "user",
         "text",
     }
@@ -141,6 +142,28 @@ def test_request_uses_only_documented_deepseek_responses_fields() -> None:
     assert body["text"]["format"]["name"] == "evidence_analyst"
     assert body["text"]["format"]["schema"] == SCHEMA
     assert "strict" not in body["text"]["format"]
+
+
+def test_invalid_schema_can_be_repaired_once_without_accepting_bad_output():
+    calls = []
+    def transport(request, timeout=None):
+        calls.append(json.loads(request.data))
+        return FakeResponse(response({'wrong': True} if len(calls) == 1 else {'summary': 'repaired'}))
+    instance = DeepSeekResponsesProvider(environ=ENV, transport=transport)
+    assert complete(instance) == {'summary': 'repaired'}
+    assert len(calls) == 2
+    assert 'only repair attempt' in calls[1]['instructions']
+    assert calls[0]['temperature'] == calls[1]['temperature'] == 0
+
+
+def test_schema_repair_is_bounded_and_fails_closed():
+    calls = []
+    def transport(request, timeout=None):
+        calls.append(request)
+        return FakeResponse(response({'wrong': True}))
+    with pytest.raises(ExternalServiceError, match='did not match JSON schema'):
+        complete(DeepSeekResponsesProvider(environ=ENV, transport=transport))
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(

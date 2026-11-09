@@ -26,10 +26,18 @@ def main():
         raise ValueError('case run does not exist in the selected database')
     bundle = db.get_agent_run_bundle(row['tenant_id'], record['run_id'])
     context = db.get_continuation_context(row['tenant_id'], record['run_id']) or {}
+    def role_result(task):
+        kinds = {'evidence_audit', 'specialist_finding', 'manager_synthesis', 'reviewer_verdict'}
+        result = next((a['content'] for a in reversed(bundle['artifacts'])
+                       if a.get('task_id') == task['id'] and a['kind'] in kinds
+                       and int(a.get('attempt', 0)) == int(task['attempt_count'])), None)
+        if result is None:
+            raise ValueError('Missing persisted output for '+task['agent_name'])
+        return result
     result = {'case_id': args.case, 'run_id': record['run_id'],
               'feedback': record['feedback'], 'task_state': context.get('task_state'),
               'agents': [{'name': t['agent_name'], 'role': t['role'], 'status': t['status'],
-                          'result': t.get('result')} for t in bundle['tasks']],
+                          'result': role_result(t)} for t in bundle['tasks']],
               'checks': [a['content'] for a in bundle['artifacts'] if a['kind']=='revision_rule_checks'],
               'loop_events': [{'type': e['event_type'], 'payload': e['payload']} for e in bundle['events']
                               if e['event_type'].startswith('task.loop.')],

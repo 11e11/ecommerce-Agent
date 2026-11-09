@@ -20,12 +20,15 @@ def aggregate(rows):
             'errors': sum(r.get('status') == 'error' for r in rows),
             'median_model_calls': median('model_calls'), 'median_tool_calls': median('tool_calls'),
             'median_input_tokens': median('input_tokens'), 'median_output_tokens': median('output_tokens'),
-            'median_latency_ms': median('latency_ms')}
+            'median_latency_ms': median('latency_ms'),
+            'reused_shopify_cases': sum('platform_shopify_operator' in r.get('specialists_reused', []) for r in rows),
+            'executed_amazon_cases': sum('platform_amazon_operator' in r.get('specialists_executed', []) for r in rows)}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', default='operations/revision-eval')
+    parser.add_argument('--variants', nargs='+', default=['baseline','stage_one'])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     folder = root / args.input
@@ -33,7 +36,7 @@ def main():
     rows = []
     missing = []
     for case in fixture['cases']:
-        for variant in ('baseline','stage_one'):
+        for variant in args.variants:
             path = folder / f"{case['id']}-{variant}.json"
             if path.exists():
                 rows.append(json.loads(path.read_text(encoding='utf-8')))
@@ -46,8 +49,8 @@ def main():
         raise ValueError('Cannot compare results from different execution contracts')
     for split in ('development','held_out','all'):
         groups[split] = {v: aggregate([r for r in rows if r['variant']==v and (split=='all' or r['split']==split)])
-                         for v in ('baseline','stage_one')}
-    lines = ['# 基础阶段反馈修订评测', '',
+                         for v in args.variants}
+    lines = ['# '+('进阶阶段选择性执行评测' if 'stage_two' in args.variants else '基础阶段反馈修订评测'), '',
              '一个固定业务案例，六种反馈表达：2 条开发、4 条保留测试。所有变体使用同一份真实模型首轮报告。', '',
              '基线：文本反馈追加后完整重跑，统一输出字段但不做结构化需求更新或范围合并。基础阶段：解释需求、完整重跑、按范围合并、规则检查与模型审核。', '',
              '以下通过数由规则读取结构化报告计算；语义合格由另一次 LLM 调用判定，不等于人工真值。错误或缺失结果计为未通过。', '',
@@ -56,13 +59,20 @@ def main():
     for split, variants in groups.items():
         for variant, g in variants.items():
             split_label = {'development':'开发', 'held_out':'保留测试', 'all':'全部'}[split]
-            variant_label = {'baseline':'文本反馈基线', 'stage_one':'基础阶段'}[variant]
+            variant_label = {'baseline':'文本反馈基线', 'stage_one':'基础阶段', 'stage_two':'进阶阶段'}[variant]
             lines.append(f"| {split_label} | {variant_label} | {g['scope_passed']}/{g['cases']} | {g['budget_passed']}/{g['cases']} | {g['semantic_passed']}/{g['cases']} | {g['review_approved']}/{g['cases']} | {g['errors']} |")
+    if 'stage_two' in args.variants:
+        lines += ['', '进阶在保留修改范围控制的基础上，由代码检查依赖并复用无关 Specialist。三组使用当前相同执行合同重新运行；不是拿旧版基础结果做耗时对照。']
     lines += ['', '## 执行开销', '', '工作流开销包含需求解释，排除单独的评测评分调用与共享首轮生成。token 是服务返回的已知用量；传输中断可能无法取得用量。基础阶段不做局部重算，不预期必然降本。', '',
               '| 变体 | 模型调用中位数 | 工具调用中位数 | 输入token中位数 | 输出token中位数 | 耗时中位数(ms) |',
               '|---|---|---|---|---|---|']
     for v,g in groups['all'].items():
         lines.append(f"| {v} | {g['median_model_calls']} | {g['median_tool_calls']} | {g['median_input_tokens']} | {g['median_output_tokens']} | {g['median_latency_ms']} |")
+    if 'stage_two' in args.variants:
+        lines += ['', '## 选择性执行验证', '', '进阶执行仍重跑 Analyst、协调节点、Manager 和 Reviewer；仅验证无关 Shopify Specialist 的复用。', '',
+                  '| 变体 | Amazon 实际执行 | Shopify 复用 |', '|---|---|---|']
+        for v,g in groups['all'].items():
+            lines.append(f"| {v} | {g['executed_amazon_cases']}/{g['cases']} | {g['reused_shopify_cases']}/{g['cases']} |")
     lines += ['', '## 逐条结果', '', '| 用例 | 变体 | 规则 | 语义 | 说明 |', '|---|---|---|---|---|']
     for r in rows:
         checks = ', '.join(f"{c['name']}={c['passed']}" for c in r.get('rule_checks',[])) or '未完成'
@@ -74,10 +84,10 @@ def main():
               '- 范围规则要求 A 库存的用户可见字段有变化，其他建议整个对象相同；措辞变化不代表质量提高，因此另列语义判定。',
               '- 此任务已提供完整样例事实，要求不检索平台政策；不用于衡量 RAG 或工具循环质量。',
               '- 初始开发中出现传输中断、规划平台编号及引用错误，已保留本地诊断；不计作正式六条反馈的质量样本。',
-              '- development-attempts 保留了契约修复前两条开发失败记录；正式保留测试在修复冻结后执行。',
+              '- 开发记录与保留测试分开；保留测试在实现与评分协议冻结后执行。',
               '- 范围保持检查针对 priorities 中的建议对象；摘要、风险和限制会重新综合，由语义评分与系统审核检查。',
               '- 执行失败计为端到端未通过，但不将其解释为已经生成报告的范围错误；请结合执行错误列与逐条原因阅读。',
-              '- 未进行局部重算、长会话或跨会话记忆优化。', '',
+              '- 未进行长会话或跨会话记忆优化。', '',
               '- 生成与评分使用同一型号模型，可能共享偏差；LLM语义合格不等于独立人工真值。',
               '- 开发评分补齐审计和 Skill 上下文后重评一次，旧评分保存在 semantic_judge_history；保留测试没有重复评分。',
               '- 两组语义评分都可能通过，但基线仍改写非目标建议，因此“保持不变”以规则对象比较为准。', '',

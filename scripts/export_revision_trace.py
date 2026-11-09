@@ -13,8 +13,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', required=True)
     parser.add_argument('--case', default='held-01-stage_one')
+    parser.add_argument('--folder', default='operations/revision-eval')
     args = parser.parse_args()
-    folder = ROOT / 'operations/revision-eval'
+    folder = ROOT / args.folder
     record = json.loads((folder / (args.case + '.json')).read_text(encoding='utf-8'))
     db_path = ROOT / args.db
     if not db_path.is_file():
@@ -34,9 +35,13 @@ def main():
         if result is None:
             raise ValueError('Missing persisted output for '+task['agent_name'])
         return result
+    started_names = {e['payload'].get('agent_name') for e in bundle['events'] if e['event_type']=='task.started'}
+    reused_names = {e['payload']['agent_name'] for e in bundle['events'] if e['event_type']=='task.reused'} - started_names
     result = {'case_id': args.case, 'run_id': record['run_id'],
               'feedback': record['feedback'], 'task_state': context.get('task_state'),
+              'execution_plan': record.get('execution_plan'),
               'agents': [{'name': t['agent_name'], 'role': t['role'], 'status': t['status'],
+                          'execution': 'reused' if t['agent_name'] in reused_names else 'executed',
                           'result': role_result(t)} for t in bundle['tasks']],
               'checks': [a['content'] for a in bundle['artifacts'] if a['kind']=='revision_rule_checks'],
               'loop_events': [{'type': e['event_type'], 'payload': e['payload']} for e in bundle['events']

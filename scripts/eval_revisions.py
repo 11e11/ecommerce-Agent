@@ -96,7 +96,7 @@ def judge(provider, parent, revised, feedback, evidence, system_context=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--split', choices=['development', 'held_out', 'all'], default='development')
-    parser.add_argument('--variants', nargs='+', choices=['baseline', 'stage_one'], default=['baseline', 'stage_one'])
+    parser.add_argument('--variants', nargs='+', choices=['baseline', 'stage_one', 'stage_two'], default=['baseline', 'stage_one'])
     parser.add_argument('--case', default=None)
     parser.add_argument('--rejudge', action='store_true', help='Re-score existing outputs once with complete context; keep original scores')
     parser.add_argument('--db', default='.tmp/revision-stage-one.sqlite')
@@ -166,7 +166,7 @@ def main():
             (tuple(p['platforms']), p['category']) for p in original['priorities']}, 'Initial report lacks required revision targets'
         (out / 'initial.json').write_text(json.dumps({'dataset_sha256': dataset_hash, 'model': provider.configuration(),
             'run_id': first['run']['id'], 'evidence': evidence, 'report': original,
-            'tool_policy': 'disabled for both variants; all roles rerun on supplied facts',
+            'tool_policy': 'external tools disabled; baseline/full run all roles, selective may reuse verified Specialist results',
             'execution_contract_hash': app.agent_graphs.execution_contract_hash(),
             'initial_report_warnings': [] if len(original['priorities']) == 4 else ['Model returned an additional priority despite the requested four; retained unchanged and included in preservation checks.']}, ensure_ascii=False, indent=2), encoding='utf-8')
         expected = {'needs_clarification': False, 'question': '', **fixture['expected_update']}
@@ -204,8 +204,9 @@ def main():
                 gold = update_state(initial_state(fixture['objective'], ['amazon','shopify']), expected, case['feedback'])
                 try:
                     idem = f"{dataset_hash[:12]}-{case['id']}-{variant}"
-                    if variant == 'stage_one':
-                        child = app.agent_runs.follow_up(owner, first['run']['id'], case['feedback'], idem, idem)
+                    if variant in {'stage_one', 'stage_two'}:
+                        child = app.agent_runs.follow_up(owner, first['run']['id'], case['feedback'], idem, idem,
+                            execution_mode='selective' if variant=='stage_two' else 'full')
                     else:
                         # Original behavior: append textual feedback and rerun.
                         # Keep the same output schema, but no interpreted update or scoped merge.
@@ -226,7 +227,10 @@ def main():
                     result['output_tokens'] = sum(c['output_tokens'] for c in meter.calls[call_start:])
                     result['token_usage_incomplete'] = any(c.get('usage_unknown', False) for c in meter.calls[call_start:])
                     result['tool_calls'] = sum(e['event_type'] == 'task.tool_call' for e in bundle['events'])
-                    result['specialists_executed'] = [t['agent_name'] for t in bundle['tasks'] if t['role']=='platform_specialist' and t['status']=='completed']
+                    started = {e['payload'].get('agent_name') for e in bundle['events'] if e['event_type']=='task.started'}
+                    result['specialists_executed'] = [t['agent_name'] for t in bundle['tasks'] if t['role']=='platform_specialist' and t['agent_name'] in started]
+                    result['specialists_reused'] = [e['payload']['agent_name'] for e in bundle['events'] if e['event_type']=='task.reused' and e['payload']['agent_name'] not in started]
+                    result['execution_plan'] = next((a['content'] for a in reversed(bundle['artifacts']) if a['kind']=='execution_plan'), None)
                     context = app.db.get_continuation_context(owner.tenant_id, child['id']) or {}
                     result['parsed_update'] = (context.get('task_state') or {}).get('latest_update')
                     # Judge calls excluded from workflow cost and latency above.

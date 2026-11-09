@@ -1,0 +1,85 @@
+version: 1
+purpose: 六种同义表达，只验证“限定修改平台和内容，并禁止加预算”这一类反馈。
+objective: >-
+  比较 Amazon 和 Shopify 同款商品的销量、listing 标题和五点描述，给出广告与库存建议。
+  每个平台各给一条广告和一条库存建议，共四条，平台建议不要合并。广告先核验效果，不增加预算。
+  只依据给定报表提出分析建议，不引用平台政策，不使用知识检索工具。每条只引用本平台输入数据，不计算跨平台指标。
+platform_mapping:
+  A: amazon
+  B: shopify
+expected_update:
+  target_platform: amazon
+  categories: [inventory]
+  preserve_platforms: [shopify]
+  forbid_budget_increase: true
+cases:
+  - id: dev-01
+    split: development
+    feedback: Amazon 暂时不增加广告预算，只修改它的库存建议，Shopify 保持原样。
+  - id: dev-02
+    split: development
+    feedback: 这轮只调整 Amazon 的库存方案，Amazon 广告不要追加预算，Shopify 的建议全部沿用上一版。
+  - id: held-01
+    split: held_out
+    feedback: Amazon 广告预算先别加了，请仅重写 Amazon 库存这一条，Shopify 那边不要动。
+  - id: held-02
+    split: held_out
+    feedback: 其他内容都保留，只改 Amazon 的库存建议；Amazon 广告不加钱，Shopify 维持原建议。
+  - id: held-03
+    split: held_out
+    feedback: Shopify 的结论我接受，不用修改。Amazon 先维持广告预算，这次只修改它的库存建议。
+  - id: held-04
+    split: held_out
+    feedback: 请保留 Shopify 的全部建议和 Amazon 的其他建议，仅修改 Amazon 库存部分，且 Amazon 广告预算不得增加。
+evidence:
+  - source_id: amazon-product
+    platform: amazon
+    source_type: amazon_listing
+    data:
+      sku: GOODS-001
+      title: Acme M1 桌面收纳架
+      brand: Acme
+      model: M1
+      bullets: [金属材质, 桌面收纳]
+  - source_id: amazon-sales
+    platform: amazon
+    source_type: amazon_business_report
+    data:
+      sku: GOODS-001
+      period: 最近完整七天
+      units_ordered: 70
+      daily_units: [10, 9, 11, 10, 10, 8, 12]
+      sessions: 700
+  - source_id: amazon-stock
+    platform: amazon
+    source_type: amazon_fba_inventory
+    data:
+      sku: GOODS-001
+      fulfillable_quantity: 12
+      lead_time_days: 7
+  - source_id: amazon-ads
+    platform: amazon
+    source_type: amazon_ads_search_term
+    data:
+      sku: GOODS-001
+      period: 最近完整七天
+      spend: 100
+      attributed_sales: 200
+      attributed_orders: 10
+      currency: USD
+      search_terms: [{term: 桌面收纳架, spend: 100, attributed_orders: 10}]
+  - source_id: shopify-product
+    platform: shopify
+    source_type: shopify_products
+    data:
+      sku: GOODS-001
+      title: Acme M1 桌面收纳架
+      brand: Acme
+      model: M1
+      description: 金属桌面收纳架
+      period: 最近完整七天
+      sales: 35
+      daily_units: [5, 4, 6, 5, 5, 4, 6]
+      stock_level: 80
+      lead_time_days: 7
+      advertising: {spend: 50, attributed_sales: 150, currency: USD}

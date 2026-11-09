@@ -31,6 +31,7 @@ from .agent_graphs import AgentGraphService, STRICT_TOOL_POLICY
 from . import harness
 from .agent_loop import assemble_context
 from . import requirements
+from . import reuse
 from .continuations import build_continuation, context_for_platform, execution_trace
 from .evidence_audit import audit_evidence
 
@@ -2255,9 +2256,12 @@ class WeeklyOpsCouncil:
         self, principal: Principal, parent_run_id: str, feedback: Any,
         idempotency_key: str, request_id: str, *, objective: Any = None,
         evidence: Any = None, evidence_import_ids: Any = None,
+        execution_mode: str = 'full',
     ) -> dict[str, Any]:
         """Create an immutable child run; re-audit evidence instead of replaying old conclusions."""
         self.auth.require(principal, "operator")
+        if execution_mode not in {'full','selective'}:
+            raise ValidationError('execution_mode must be full or selective')
         parent = self.get(principal, parent_run_id)
         old = parent["run"]
         if old["status"] != "completed" or old["review_status"] != "approved":
@@ -2270,7 +2274,7 @@ class WeeklyOpsCouncil:
             if not idempotency_key or len(idempotency_key) > 200:
                 raise ValidationError('revision idempotency key is required and must be <= 200 characters')
             fingerprint = hashlib.sha256(json.dumps(
-                [parent_run_id, feedback, objective, evidence, evidence_import_ids],
+                [parent_run_id, feedback, objective, evidence, evidence_import_ids, execution_mode],
                 ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             with self.db.connect() as conn:
                 existing = conn.execute('SELECT id FROM agent_runs WHERE tenant_id=? AND idempotency_key=?',
@@ -2295,7 +2299,7 @@ class WeeklyOpsCouncil:
                 and p.get('category') not in update['categories'] for p in parent_report['priorities']):
                 return {'status': 'needs_clarification', 'question': '原广告建议包含增加预算，是否允许同时修改该广告建议以满足新的预算限制？'}
             context.update(task_state=state, parent_report=parent_report,
-                           revision_request_fingerprint=fingerprint)
+                           revision_request_fingerprint=fingerprint, execution_mode=execution_mode)
         if isinstance(objective, str):
             context["root_objective"] = objective
         if evidence is not None and not isinstance(evidence, list):
@@ -3056,7 +3060,7 @@ class WeeklyOpsCouncil:
             with _call_context(memory, _USAGE_SINK.get()):
                 return self.provider.complete(
                     agent_name=spec.name,
-                    instructions=spec.instructions + harness.PLAN_INSTRUCTIONS + f' At most {budget.max_plan_steps} steps. Each question/expected_evidence <=300 characters; done_when <=200. Use only available_tools. Step IDs start at 1 and are contiguous.',
+                    instructions=spec.instructions + harness.PLAN_INSTRUCTIONS + f' At most {budget.max_plan_steps} steps. Each question/expected_evidence <=300 characters; done_when <=200. Use only available_tools. Step IDs start at 1 and are contiguous. You own only target_platform analysis; the coordinator owns cross-platform comparison. Do not request another platform merely because the global objective mentions it. needs_from_other_platforms must list only genuine dependencies of YOUR local findings. Supplied evidence can be analyzed without tools.',
                     payload=model_context(payload, "plan"),
                     output_schema=plan_schema,
                     safety_identifier=safety_identifier,
@@ -3634,6 +3638,13 @@ class WeeklyOpsCouncil:
             # describes what the model must produce, not what we add to it.
             result["knowledge_evidence"] = used
             self.db.complete_agent_task(principal.tenant_id, run_id, spec.name, result)
+            if spec.platform != 'cross_platform':
+                context = self.db.get_continuation_context(principal.tenant_id, run_id) or {}
+                snapshot = reuse.dependencies(run, spec, context.get('task_state'),
+                    self.skill_loader.load(spec.skill_ids), self.provider.configuration(), audit)
+                snapshot.update(result_digest=reuse.digest(result), cross_platform_dependency=any(
+                    n.get('platform') != spec.platform for n in (outcome.get('plan') or {}).get('needs_from_other_platforms', [])))
+                self.db.record_agent_artifact(principal.tenant_id, run_id, spec.name, 'specialist_dependencies', snapshot)
             return result
         except Exception as exc:
             self.db.fail_agent_task(principal.tenant_id, run_id, spec.name, str(exc))
@@ -3719,6 +3730,10 @@ class WeeklyOpsCouncil:
             payload['current_task_state'] = task_state
             payload['revision_contract'] = 'Every priority must include category and budget_change describing its actual text. For a revision produce replacements for existing editable priorities, not a new report structure. Preserve restrictions, distinguish no increase from no discussion of advertising.'
         payload["specialist_plans"] = self._latest_plans(run)
+        payload['execution_plan'] = next((a['content'] for a in reversed(
+            self.db.get_agent_run_bundle(run['tenant_id'], run_id)['artifacts']) if a['kind']=='execution_plan'), None)
+        if payload['execution_plan']:
+            payload['reuse_instruction'] = 'A reused Specialist finding is historical verified analysis, not a fresh execution. Describe it as reused in evidence_approach; do not claim its old plan or tools ran this turn. Preserve its evidence sufficiency and gaps.'
         if revision_feedback is not None:
             payload["revision_feedback"] = revision_feedback
         manager_schema = requirements.report_schema(MANAGER_SCHEMA) if task_state else json.loads(json.dumps(MANAGER_SCHEMA))
@@ -3735,7 +3750,9 @@ class WeeklyOpsCouncil:
                 for platform, level in levels_for_schema.items()]}
         report = self._complete_recorded(spec, run,
             agent_name=spec.name,
-            instructions=spec.instructions + ' Do not introduce numeric order quantities or thresholds without an evidence-grounded derivation and explicit assumptions. Unknown in-transit stock or safety policy requires a verification step, not an invented fixed purchase quantity.',
+            instructions=spec.instructions + ' Do not introduce numeric order quantities or thresholds without an evidence-grounded derivation and explicit assumptions. Unknown in-transit stock or safety policy requires a verification step, not an invented fixed purchase quantity.' + (
+                ' This is a feedback revision. Respond inside the editable priority itself, not only the executive summary. Revise its concrete verification/execution steps; if the recommendation remains appropriate, explain what was rechecked and why it is retained in downstream_action. Do not copy the editable priority verbatim or invent facts merely to change wording.'
+                if task_state and task_state.get('latest_update') else ''),
             payload=payload,
             output_schema=manager_schema,
             safety_identifier=safety_identifier,
@@ -3842,6 +3859,7 @@ class WeeklyOpsCouncil:
                     'revision_rule_checks': checks,
                     'revision_review_instruction': 'Check that the text follows the user feedback and still-effective constraints, and agrees with category/budget_change metadata. Reject unsupported claims. Read latest_update.feedback and compare editable advice against the previous report when provided.',
                     'previous_report': continuation.get('parent_report'),
+                    'execution_plan': next((a['content'] for a in reversed(self.db.get_agent_run_bundle(run['tenant_id'], run_id)['artifacts']) if a['kind']=='execution_plan'), None),
                 },
                 output_schema=review_schema,
                 safety_identifier=safety_identifier,
@@ -3942,6 +3960,28 @@ class WeeklyOpsCouncil:
             ) and hasattr(self.provider, "research"):
                 knowledge_client = self.knowledge_client or McpStdioKnowledgeClient()
                 knowledge_client_owned = self.knowledge_client is None
+            continuation = self.db.get_continuation_context(principal.tenant_id, run_id) or {}
+            def prepare_specialists(findings):
+                state = continuation.get('task_state')
+                audit = self._audit_from_findings(findings)
+                parent = self.get(principal, continuation['parent_run_id']) if state and state.get('latest_update') else None
+                active, reused, decisions = [], {}, []
+                for spec in specialist_specs:
+                    current_deps = reuse.dependencies(run, spec, state, self.skill_loader.load(spec.skill_ids),
+                                                      self.provider.configuration(), audit)
+                    cached, reason = reuse.decide(parent, run, spec, state, current_deps) if parent else (None, 'initial_run')
+                    if cached is None:
+                        active.append(spec)
+                    else:
+                        self.db.reuse_agent_task(principal.tenant_id, run_id, spec.name, cached, parent['run']['id'])
+                        saved = reuse.result_artifact(parent, spec.name, 'specialist_dependencies')
+                        self.db.record_agent_artifact(principal.tenant_id, run_id, spec.name, 'specialist_dependencies', saved)
+                        reused[spec.name] = cached
+                    decisions.append({'agent':spec.name, 'action':'reuse' if cached else 'execute', 'reason':reason})
+                self.db.record_agent_artifact(principal.tenant_id, run_id, audit_spec.name, 'execution_plan',
+                    {'mode':'selective', 'parent_run_id':continuation.get('parent_run_id'), 'decisions':decisions,
+                     'downstream':'cross_platform_controller,store_manager,operations_reviewer always execute'})
+                return active, reused
             run_graph = build_run_graph(
                 audit_spec=audit_spec,
                 specialist_specs=specialist_specs,
@@ -3996,6 +4036,7 @@ class WeeklyOpsCouncil:
                     audit=self._audit_from_findings(findings),
                 ),
                 max_workers=self.max_workers,
+                prepare_specialists=prepare_specialists if continuation.get('execution_mode') == 'selective' else None,
             )
             graph_state = run_graph.invoke({"findings": {}, "failure": None})
             if graph_state.get("failure") is not None:

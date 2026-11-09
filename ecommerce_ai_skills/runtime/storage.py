@@ -5459,6 +5459,21 @@ class Database:
             )
         return self.get_agent_task(tenant_id, run_id, agent_name)
 
+    def reuse_agent_task(self, tenant_id, run_id, agent_name, content, parent_run_id):
+        """Complete a pending task from verified history without claiming execution."""
+        now = utc_now()
+        with self.transaction() as conn:
+            row = conn.execute("SELECT id,attempt_count FROM agent_tasks WHERE tenant_id=? AND run_id=? AND agent_name=? AND status='pending'",
+                               (tenant_id, run_id, agent_name)).fetchone()
+            if row is None:
+                raise ConflictError('only pending tasks can reuse a result')
+            conn.execute("UPDATE agent_tasks SET status='completed',completed_at=? WHERE id=?", (now,row['id']))
+            conn.execute("INSERT INTO agent_artifacts(id,tenant_id,run_id,task_id,kind,attempt,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                         (self._id(),tenant_id,run_id,row['id'],'specialist_finding',row['attempt_count'],json.dumps(content,ensure_ascii=False,sort_keys=True),now))
+            conn.execute("INSERT INTO agent_events(id,tenant_id,run_id,task_id,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                         (self._id(),tenant_id,run_id,row['id'],'task.reused',json.dumps({'agent_name':agent_name,'parent_run_id':parent_run_id}),now))
+        return self.get_agent_task(tenant_id, run_id, agent_name)
+
     def fail_agent_task(self, tenant_id: str, run_id: str, agent_name: str, error: str) -> None:
         now = utc_now()
         with self.transaction() as conn:

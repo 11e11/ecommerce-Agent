@@ -29,7 +29,11 @@ class RevisionProvider(Provider):
         return result
 
 
-def test_full_rerun_with_scoped_merge_and_idempotent_update(tmp_path):
+import pytest
+
+
+@pytest.mark.parametrize('mode', ['full','selective','missing_snapshot'])
+def test_full_rerun_with_scoped_merge_and_idempotent_update(tmp_path, mode):
     provider = RevisionProvider()
     app = RuntimeApplication(Database(tmp_path / 'revision.sqlite'), agent_provider=provider)
     owner = app.auth.authenticate(app.bootstrap('Revision', 'owner@example.test')['api_key'])
@@ -41,9 +45,13 @@ def test_full_rerun_with_scoped_merge_and_idempotent_update(tmp_path):
                                    'initial', 'initial', revision_support=True)
     parent = app.agent_runs.execute(owner, first['id'], 'execute')
     original = next(a['content'] for a in parent['artifacts'] if a['kind'] == 'weekly_ops_report')
-    child = app.agent_runs.follow_up(owner, first['id'], '只修改 Amazon 库存，广告不加预算，Shopify保持', 'child', 'child')
+    if mode == 'missing_snapshot':
+        with app.db.transaction() as conn:
+            conn.execute("DELETE FROM agent_artifacts WHERE run_id=? AND kind='specialist_dependencies'", (first['id'],))
+    execution_mode = 'full' if mode == 'full' else 'selective'
+    child = app.agent_runs.follow_up(owner, first['id'], '只修改 Amazon 库存，广告不加预算，Shopify保持', 'child', 'child', execution_mode=execution_mode)
     before = len(provider.calls)
-    assert app.agent_runs.follow_up(owner, first['id'], '只修改 Amazon 库存，广告不加预算，Shopify保持', 'child', 'child')['id'] == child['id']
+    assert app.agent_runs.follow_up(owner, first['id'], '只修改 Amazon 库存，广告不加预算，Shopify保持', 'child', 'child', execution_mode=execution_mode)['id'] == child['id']
     assert len(provider.calls) == before
     bundle = app.agent_runs.execute(owner, child['id'], 'execute-child')
     revised = next(a['content'] for a in bundle['artifacts'] if a['kind'] == 'weekly_ops_report')
@@ -52,9 +60,15 @@ def test_full_rerun_with_scoped_merge_and_idempotent_update(tmp_path):
     assert revised['priorities'][2:] == original['priorities'][2:]
     checks = next(a['content']['checks'] for a in bundle['artifacts'] if a['kind'] == 'revision_rule_checks')
     assert all(c['passed'] for c in checks)
-    # Stage one deliberately reruns both Specialists.
     names = {name for name, kind, _ in provider.calls[before:] if kind == 'specialist'}
-    assert {'platform_amazon_operator', 'platform_shopify_operator'} <= names
+    if mode == 'selective':
+        assert 'platform_amazon_operator' in names and 'platform_shopify_operator' not in names
+        reused = [e for e in bundle['events'] if e['event_type']=='task.reused']
+        assert len(reused) == 1 and reused[0]['payload']['agent_name']=='platform_shopify_operator'
+        task = next(t for t in bundle['tasks'] if t['agent_name']=='platform_shopify_operator')
+        assert task['attempt_count'] == 0 and task['started_at'] is None
+    else:
+        assert {'platform_amazon_operator', 'platform_shopify_operator'} <= names
 
 
 def test_demo_http_keeps_legacy_behavior_and_cannot_claim_real_revision_support(tmp_path):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,3 +23,4 @@ class FollowUpRequest(BaseModel):
     objective: str | None = Field(default=None, min_length=5, max_length=1000)
     evidence: list[dict[str, Any]] | None = None
     evidence_import_ids: list[str] | None = None
+    execution_mode: Literal['full', 'selective'] = 'selective'

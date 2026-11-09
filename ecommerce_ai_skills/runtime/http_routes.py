@@ -647,7 +647,7 @@ def post_v1_agent_runs_runId_follow_ups(payload: FollowUpRequest, ctx: HTTPConte
     request_id = ctx.request_id
     run_id = runId
     body = payload.model_dump(exclude_unset=True)
-    return ctx._json(200, ctx.app.agent_runs.follow_up(principal, run_id, body['feedback'], ctx.headers.get('Idempotency-Key', ''), request_id, objective=body.get('objective'), evidence=body.get('evidence'), evidence_import_ids=body.get('evidence_import_ids')), request_id)
+    return ctx._json(200, ctx.app.agent_runs.follow_up(principal, run_id, body['feedback'], ctx.headers.get('Idempotency-Key', ''), request_id, objective=body.get('objective'), evidence=body.get('evidence'), evidence_import_ids=body.get('evidence_import_ids'), execution_mode=body.get('execution_mode', 'selective')), request_id)
 
 @router.post('/v1/agent-runs/{runId}/execute', summary='Execute the bound Domain Agent Graph and independent Reviewer', tags=['agent-runs'])
 def post_v1_agent_runs_runId_execute(ctx: HTTPContext=Depends(get_context), runId: str=Path(...)):

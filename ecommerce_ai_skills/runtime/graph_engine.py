@@ -67,6 +67,7 @@ def build_run_graph(
     run_manager: RunManager,
     run_reviewer: RunReviewer,
     max_workers: int,
+    prepare_specialists: Callable | None = None,
 ) -> Any:
     """Compile one version-bound run contract into a LangGraph StateGraph.
 
@@ -75,6 +76,7 @@ def build_run_graph(
     control plane.
     """
     specialists = tuple(specialist_specs)
+    active_specialists = specialists
     concurrency = max(1, min(max_workers, 3))
     graph = StateGraph(WeeklyOpsState)
 
@@ -83,23 +85,25 @@ def build_run_graph(
         # any provider work is submitted, including the specialists that only
         # start after the audit barrier.
         start_agent_task(audit_spec)
-        for spec in specialists:
-            start_agent_task(spec)
+        if prepare_specialists is None:
+            for spec in specialists:
+                start_agent_task(spec)
         return {}
 
     def fan_out_audit(_: WeeklyOpsState) -> list[Send]:
         return [Send("evidence_analyst", {"spec": audit_spec})]
 
     def fan_out_specialists(state: WeeklyOpsState) -> Any:
-        if not specialists:
+        if not active_specialists:
             return "specialist_barrier"
         findings = state.get("findings", {})
         return [
             Send("specialist", {"spec": spec, "findings": findings})
-            for spec in specialists
+            for spec in active_specialists
         ]
 
     def run_audit_node(state: WeeklyOpsState) -> dict[str, Any]:
+        nonlocal active_specialists
         spec = state["spec"]
         try:
             result = run_audit(spec)
@@ -107,7 +111,13 @@ def build_run_graph(
             # The audit is a prerequisite: without it the specialists would plan
             # against an unknown evidence base.
             return {"failure": exc}
-        return {"findings": {spec.name: result}}
+        findings = {spec.name: result}
+        if prepare_specialists is not None:
+            active_specialists, reused = prepare_specialists(findings)
+            findings.update(reused)
+            for specialist in active_specialists:
+                start_agent_task(specialist)
+        return {"findings": findings}
 
     def run_specialist_node(state: WeeklyOpsState) -> dict[str, Any]:
         spec = state["spec"]

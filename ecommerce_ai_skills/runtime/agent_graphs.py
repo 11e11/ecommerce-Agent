@@ -208,6 +208,7 @@ class AgentGraphService:
             Path(__file__).resolve().with_name("harness.py"),
             Path(__file__).resolve().with_name("agent_loop.py"),
             Path(__file__).resolve().with_name("requirements.py"),
+            Path(__file__).resolve().with_name("reuse.py"),
             Path(__file__).resolve().with_name("continuations.py"),
             Path(__file__).resolve().with_name("evidence_audit.py"),
             Path(__file__).resolve().with_name("evidence_policy.py"),

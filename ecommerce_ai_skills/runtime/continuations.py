@@ -59,7 +59,7 @@ def context_for_platform(context: dict[str, Any] | None, platform: str) -> dict[
 def execution_trace(bundle: dict[str, Any]) -> dict[str, Any]:
     """Readable projection of persisted execution, excluding raw tool payloads."""
     names = {row["id"]: row["agent_name"] for row in bundle["tasks"]}
-    kinds = {"agent_plan", "agent_reflection", "specialist_working_memory", "context_assembly", "tool_evidence_snapshot", "context_budget"}
+    kinds = {"agent_plan", "agent_reflection", "specialist_working_memory", "context_assembly", "tool_evidence_snapshot", "context_budget", "execution_plan", "specialist_dependencies"}
     artifacts = []
     for artifact in bundle["artifacts"]:
         if artifact["kind"] not in kinds:
@@ -74,7 +74,7 @@ def execution_trace(bundle: dict[str, Any]) -> dict[str, Any]:
                           "created_at": artifact.get("created_at")})
     events = [{"agent": names.get(e.get("task_id")), "type": e["event_type"],
                "payload": e["payload"], "created_at": e.get("created_at")} for e in bundle["events"]
-              if e["event_type"].startswith(("task.plan", "task.step", "task.tool", "task.reflection", "task.replan", "task.loop"))]
+              if e["event_type"].startswith(("task.plan", "task.step", "task.tool", "task.reflection", "task.replan", "task.loop", "task.reused"))]
     return {
         "run_id": bundle["run"]["id"], "status": bundle["run"]["status"],
         "provider": bundle["run"].get("provider"), "model": bundle["run"].get("model"),

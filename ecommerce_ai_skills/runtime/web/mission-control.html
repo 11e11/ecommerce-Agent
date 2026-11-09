@@ -155,7 +155,8 @@
           <div class="tool-layout">
             <section class="tool-panel form-panel">
               <form id="run-form">
-                <label>本次目标<textarea id="run-objective" rows="3" required>找出本周最重要、可由证据支持的经营行动。</textarea></label>
+                <label>本次目标<textarea id="run-objective" rows="3" aria-describedby="run-objective-hint" required>优化各平台商品标题和五点描述，给出有证据支持的建议。</textarea></label>
+                <small id="run-objective-hint">请说明具体任务，例如商品标题优化、广告分析或库存检查。创建后，在右侧运行记录点击“执行”，完成后点击“详情”查看结论。</small>
                 <fieldset><legend>选择已发布协作图</legend><div id="run-graph-options" class="check-list"></div></fieldset>
                 <fieldset><legend>选择 Evidence</legend><div id="run-evidence-options" class="check-list"></div></fieldset>
                 <fieldset><legend>选择 Metric Observations（可选）</legend><div id="run-metric-options" class="check-list"></div></fieldset>
@@ -332,7 +333,9 @@
 
   <dialog id="detail-dialog" class="detail-dialog">
     <div class="dialog-head"><div><p class="kicker">Evidence-backed detail</p><h2 id="detail-title">详情</h2></div><button data-action="close-dialog" data-dialog="detail-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>
-    <pre id="detail-content"></pre>
+    <div id="detail-report" class="run-report" hidden></div>
+    <div id="detail-runtime" class="runtime-trace" hidden></div>
+    <details id="detail-raw" open><summary>原始数据</summary><pre id="detail-content"></pre></details>
   </dialog>
   <dialog id="proposal-decision-dialog" class="detail-dialog">
     <div class="dialog-head"><div><p class="kicker">Human control</p><h2>提案审批</h2></div><button data-action="close-dialog" data-dialog="proposal-decision-dialog" class="icon-button" aria-label="关闭"><img src="/app/assets/icons/x.svg" alt=""></button></div>

@@ -83,8 +83,29 @@ def test_analyst_precedes_specialists_controller_has_no_harness(tmp_path):
     assert len(plans) == 2
     manager = next(payload for name, kind, payload in provider.calls if kind == "manager")
     assert set(manager["specialist_plans"]) == {"amazon", "shopify"}
-    assert final_report(bundle)["execution_gate"]["eligible"] is True
-    assert app.db.agent_run_downstream_eligible(owner.tenant_id, bundle["run"]["id"])
+    # This provider forges notes without calling the executor. It cannot pass
+    # the evidence gate merely because its reflection claims coverage.
+    assert final_report(bundle)["execution_gate"]["eligible"] is False
+    assert not app.db.agent_run_downstream_eligible(owner.tenant_id, bundle["run"]["id"])
+
+
+def test_runtime_rejects_fabricated_tools_and_invalid_arguments_before_io(tmp_path):
+    class InvalidCalls(Provider):
+        def research(self, *, tool_executor, **kwargs):
+            tool_executor("invented.tool", {})
+            tool_executor("opc.ops_metrics", {"limit": "many"})
+            tool_executor("opc.ops_metrics", {"limit": 1})
+            return []
+
+    client = OpsClient()
+    _, _, bundle = execute(tmp_path, InvalidCalls(ops=True), client)
+    assert client.calls
+    assert all(name == "opc.ops_metrics" and args["limit"] == 1 for name, args in client.calls)
+    reasons = {event["payload"].get("reason") for event in bundle["events"]}
+    assert "invalid_arguments" in reasons
+    assert "unregistered_or_disallowed_tool" in reasons
+    assert any(a["kind"] == "context_budget" for a in bundle["artifacts"])
+    assert any(e["event_type"] == "task.loop.observe" for e in bundle["events"])
 
 
 def test_invalid_analyst_degrades_to_unknown_and_blocks_execution(tmp_path):

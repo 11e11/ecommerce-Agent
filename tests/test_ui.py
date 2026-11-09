@@ -15,6 +15,18 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "ecommerce_ai_skills" / "runtime" / "web"
 
 
+def test_default_run_objective_routes_for_demo_platforms():
+    import json
+    from ecommerce_ai_skills.runtime.skill_router import SkillRouter
+
+    html = (WEB / "mission-control.html").read_text(encoding="utf-8")
+    objective = re.search(r'<textarea id="run-objective"[^>]*>(.*?)</textarea>', html).group(1)
+    packaged = ROOT / "ecommerce_ai_skills" / "package_data" / "dist"
+    route = SkillRouter(packaged / "skills", json.loads((packaged / "ontology.json").read_text(encoding="utf-8"))).select(objective, ["amazon", "shopify"])
+    assert route["by_platform"] == {"amazon": ["ecom-listing"], "shopify": ["ecom-listing"]}
+    assert 'id="run-objective-hint"' in html
+
+
 def test_l7_decision_workspace_visual_contract_is_complete() -> None:
     html = (WEB / "mission-control.html").read_text(encoding="utf-8")
     script = (WEB / "app.js").read_text(encoding="utf-8")

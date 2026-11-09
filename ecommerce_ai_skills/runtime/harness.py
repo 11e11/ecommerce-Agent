@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .errors import ExternalServiceError, ValidationError
+from .agent_loop import AgentLoop
 
 # --- schemas ---------------------------------------------------------------
 
@@ -559,29 +560,30 @@ def run_specialist_harness(
     """
     trace = recorder or NullRecorder()
     memory = WorkingMemory(budget=budget)
+    loop = AgentLoop(memory, trace)
     for gap in initial_gaps:
         if isinstance(gap, Mapping) and gap.get("id"):
             memory.gaps.append({"id": str(gap.get("id")), "what": str(gap.get("what") or "")})
     warnings: list[str] = []
     if not budget.plan_enabled:
-        notes = list(research_call(dict(base_payload), memory))
+        notes = list(loop.call("act", research_call, dict(base_payload)))
         payload = dict(base_payload) | {"research_notes": list(notes)}
         payload["evidence_sufficiency"] = {
             "level": "sufficient" if (base_payload.get("evidence_audit") or {}).get("adequacy") == "supported" else "partial",
             "reason": "simple tier uses the evidence audit without planning or reflection",
         }
         payload["plan_executed"] = []
-        result = final_call(payload, memory)
+        result = loop.call("final", final_call, payload)
+        loop.stop("simple_complete")
         if any(str(gap.get("id", "")).startswith("tool-unavailable") for gap in memory.gaps):
             result["evidence_sufficiency"] = {"level": "insufficient", "reason": "research tools unavailable"}
         return HarnessOutcome(result=result, memory=memory, plan=None, reflection=None, warnings=["plan_disabled_simple_tier"])
 
     def make_plan(reason: str) -> dict[str, Any]:
         plan = validate_plan(
-            plan_call(
+            loop.call("plan", plan_call,
                 dict(base_payload) | {"memory": memory.injection(), "plan_reason": reason,
                                       "previous_reflection": reflection if reason == "replan" else None},
-                memory,
             ),
             budget=budget,
             allowed_tools=allowed_tools,
@@ -612,6 +614,7 @@ def run_specialist_harness(
         if memory.seconds_left > 0:
             raise
         result = _abstention(base_payload, None, "planning deadline reached")
+        loop.stop("planning_deadline")
         return HarnessOutcome(result, memory, None, None, ["deadline_reached"])
     observed_steps: set[int] = set()
 
@@ -623,17 +626,19 @@ def run_specialist_harness(
                 break
             trace.event("task.step.started", {"round": round_index, "step_id": step["step_id"]})
             try:
-                observed = list(research_call(
+                observed = list(loop.call("act", research_call,
                     dict(base_payload) | {"memory": memory.injection(), "plan": current_plan,
-                                          "step": step, "round": round_index}, memory))
+                                          "step": step, "round": round_index}))
             except (TimeoutError, ExternalServiceError) as exc:
                 memory.gaps.append({"id": "research-unavailable", "what": str(exc)[:160]})
                 observed = []
             notes.extend(observed)
             memory.note_evidence(_notes_as_evidence(observed))
-            memory.note_steps([{"step_id": step["step_id"], "outcome": "observed", "note": step["question"][:120]}])
-            observed_steps.add(step["step_id"])
-            memory.open_questions = [question for question in memory.open_questions if question != step["question"]]
+            # A tool-requiring step without observations cannot be marked done.
+            observed_ok = any(not str(note.get("result", "")).startswith("ERROR:") for note in observed) or not step.get("tools")
+            memory.note_steps([{"step_id": step["step_id"], "outcome": "observed" if observed_ok else "empty", "note": step["question"][:120]}])
+            if observed_ok:
+                observed_steps.add(step["step_id"])
             trace.event("task.step.observed", {"round": round_index, "step_id": step["step_id"],
                                              "notes": len(observed), "tool_calls_used": memory.tool_calls_used})
             trace.artifact("specialist_working_memory", {
@@ -652,8 +657,8 @@ def run_specialist_harness(
             raw = fallback
         else:
             try:
-                raw = reflect_call(dict(base_payload) | {"plan": current_plan,
-                    "research_notes": current_notes, "memory": memory.injection()}, memory)
+                raw = loop.call("reflect", reflect_call, dict(base_payload) | {"plan": current_plan,
+                    "research_notes": current_notes, "memory": memory.injection()})
             except (TimeoutError, ExternalServiceError):
                 raw = fallback
         result = validate_reflection(raw, step_ids=step_ids, budget_exhausted=memory.expired(),
@@ -662,13 +667,15 @@ def run_specialist_harness(
         if unexecuted:
             result["covered_steps"] = [item for item in result["covered_steps"] if item not in unexecuted]
             result["uncovered_steps"] = sorted(set(result["uncovered_steps"]) | unexecuted)
-            result["abandoned"] += [f"step {item} skipped: research budget exhausted" for item in sorted(unexecuted)]
+            result["abandoned"] += [f"step {item} skipped: no observations or research budget exhausted" for item in sorted(unexecuted)]
             if result["sufficiency"] == "sufficient":
                 result["sufficiency"] = "partial"
-            result["why_insufficient"] = "planned research steps were not executed within budget"
+            result["why_insufficient"] = "planned research steps lack observations or were not executed within budget"
         if any(str(gap.get("id", "")).startswith(("tool-unavailable", "research-unavailable")) for gap in memory.gaps):
             result["sufficiency"] = "insufficient"
             result["why_insufficient"] = "required research tools were unavailable; evidence has unresolved gaps"
+        covered_questions = {s["question"] for s in current_plan["steps"] if s["step_id"] in result["covered_steps"]}
+        memory.open_questions = [q for q in memory.open_questions if q not in covered_questions]
         return result
 
     reflection = reflect(plan, notes)
@@ -708,7 +715,7 @@ def run_specialist_harness(
         result = _abstention(base_payload, plan, "specialist deadline reached")
     else:
         try:
-            result = final_call(payload, memory)
+            result = loop.call("final", final_call, payload)
         except (TimeoutError, ExternalServiceError):
             if memory.seconds_left > 0:
                 raise
@@ -720,6 +727,7 @@ def run_specialist_harness(
         warnings.append(f"duplicate_tool_calls_refused:{memory.duplicate_calls}")
     if memory.exhausted_reason():
         warnings.append(f"budget_exhausted:{memory.exhausted_reason()}")
+    loop.stop(memory.exhausted_reason() or ("evidence_sufficient" if reflection["sufficiency"] == "sufficient" else "evidence_gap"))
     return HarnessOutcome(
         result=result, memory=memory, plan=plan, reflection=reflection, warnings=warnings
     )

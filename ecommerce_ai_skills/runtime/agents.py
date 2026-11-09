@@ -22,12 +22,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import yaml
+from jsonschema import Draft202012Validator
 
 from ecommerce_ai_skills import USER_AGENT
 
 from .auth import AuthService
 from .agent_graphs import AgentGraphService, STRICT_TOOL_POLICY
 from . import harness
+from .agent_loop import assemble_context
 from .continuations import build_continuation, context_for_platform, execution_trace
 from .evidence_audit import audit_evidence
 
@@ -2949,30 +2951,42 @@ class WeeklyOpsCouncil:
         )
         if continuation is not None:
             base_payload["continuation_context"] = continuation
+        offered = harness.allowed_tools_for(
+            budget.name, tuple(spec.tool_policy.get("allowed_tools") or ())
+        )
         self.db.record_agent_artifact(
             run["tenant_id"], run["id"], spec.name, "context_assembly",
             {"platform": spec.platform, "skills": list(spec.skill_ids),
              "evidence_ids": [source["source_id"] for source in evidence],
              "continuation_chars": len(json.dumps(continuation, ensure_ascii=False)) if continuation else 0,
+             "available_tools": list(offered),
+             "budget": {"tier": budget.name, "plan_enabled": budget.plan_enabled,
+                        "max_tool_calls": budget.max_tool_calls, "max_ops_pulls": budget.max_ops_pulls,
+                        "max_replans": budget.max_replans, "deadline_seconds": budget.deadline_seconds},
              "history_is_evidence": False},
         )
         if spec.platform == "cross_platform" and findings:
             base_payload["specialist_findings"] = findings
         if revision_feedback is not None:
             base_payload["revision_feedback"] = revision_feedback
-        offered = harness.allowed_tools_for(
-            budget.name, tuple(spec.tool_policy.get("allowed_tools") or ())
-        )
         base_payload["available_tools"] = list(offered)
         gap_ids = [str(gap.get("id")) for gap in (self._audit_slice(audit, spec.platform) or {}).get("gaps") or []]
         state: dict[str, Any] = {"candidates": []}
+
+        def model_context(payload: dict[str, Any], phase: str) -> dict[str, Any]:
+            assembled, accounting = assemble_context(payload)
+            self.db.record_agent_artifact(
+                run["tenant_id"], run["id"], spec.name, "context_budget",
+                {"phase": phase, **accounting},
+            )
+            return assembled
 
         def plan_call(payload: dict[str, Any], memory: harness.WorkingMemory) -> dict[str, Any]:
             with _call_context(memory, _USAGE_SINK.get()):
                 return self.provider.complete(
                     agent_name=spec.name,
                     instructions=spec.instructions + harness.PLAN_INSTRUCTIONS,
-                    payload=payload,
+                    payload=model_context(payload, "plan"),
                     output_schema=harness.PLAN_SCHEMA,
                     safety_identifier=safety_identifier,
                 )
@@ -2996,7 +3010,7 @@ class WeeklyOpsCouncil:
                 return self.provider.complete(
                     agent_name=spec.name,
                     instructions=spec.instructions + harness.REFLECTION_INSTRUCTIONS,
-                    payload=payload,
+                    payload=model_context(payload, "reflect"),
                     output_schema=harness.REFLECTION_SCHEMA,
                     safety_identifier=safety_identifier,
                 )
@@ -3016,7 +3030,7 @@ class WeeklyOpsCouncil:
                 return self.provider.complete(
                     agent_name=spec.name,
                     instructions=spec.instructions,
-                    payload=enriched,
+                    payload=model_context(enriched, "final"),
                     output_schema=SPECIALIST_SCHEMA,
                     safety_identifier=safety_identifier,
                 )
@@ -3041,6 +3055,10 @@ class WeeklyOpsCouncil:
         self.db.record_agent_artifact(
             run["tenant_id"], run["id"], spec.name, "specialist_working_memory",
             {"memory": outcome.memory.injection(), "warnings": outcome.warnings,
+             "phase": "final",
+             "stop_reason": outcome.memory.exhausted_reason() or (
+                 "evidence_sufficient" if outcome.result.get("evidence_sufficiency", {}).get("level") == "sufficient"
+                 else "evidence_gap"),
              "tool_calls_used": outcome.memory.tool_calls_used,
              "replans_used": outcome.memory.replans_used},
         )
@@ -3130,7 +3148,46 @@ class WeeklyOpsCouncil:
         def execute_tool(name: str, arguments: dict[str, Any]) -> str:
             nonlocal tool_calls_used
             started = time.monotonic()
-            safe_arguments = dict(arguments or {})
+            if memory is not None and memory.seconds_left <= 0:
+                return "ERROR: specialist wall clock deadline reached"
+            if tool_calls_used >= max_tool_calls or (memory is not None and memory.tool_calls_left <= 0):
+                self.db.record_tool_invocation(tenant_id, run_id, spec.name,
+                    summary={"tool": name, "refused": True, "reason": "tool_budget_exhausted"})
+                return "ERROR: tool call budget exhausted"
+            # Count invalid requests too: a model cannot evade the loop budget
+            # by repeatedly inventing names or malformed arguments.
+            if name not in allowed or not isinstance(arguments, dict):
+                if memory is not None:
+                    memory.tool_calls_used += 1
+                tool_calls_used += 1
+                self.db.record_tool_invocation(tenant_id, run_id, spec.name,
+                    summary={"tool": name, "refused": True, "reason": "unregistered_or_disallowed_tool"})
+                return "ERROR: tool is not allowed or arguments are not an object"
+            safe_arguments = dict(arguments)
+            definition = next((item for item in self.RESEARCH_TOOL_DEFS if item["name"] == name), None)
+            if definition is None:
+                tool_calls_used += 1
+                if memory is not None:
+                    memory.tool_calls_used += 1
+                return "ERROR: tool has no registered implementation"
+            schema = dict(definition["parameters"], additionalProperties=False)
+            schema["properties"] = {key: dict(value) for key, value in schema.get("properties", {}).items()}
+            for key, prop in schema["properties"].items():
+                if prop.get("type") == "string":
+                    prop.update(minLength=1, maxLength=4000)
+                elif prop.get("type") == "integer":
+                    prop.update(minimum=1, maximum=3650 if key == "period_days" else 50)
+            # Tenant-data scope is supplied by the executor, never by the LLM.
+            validation_arguments = {k: v for k, v in safe_arguments.items()
+                                    if not (name in OPS_SOURCE_TYPES and k == "platform")}
+            errors = list(Draft202012Validator(schema).iter_errors(validation_arguments))
+            if errors:
+                if memory is not None:
+                    memory.tool_calls_used += 1
+                tool_calls_used += 1
+                self.db.record_tool_invocation(tenant_id, run_id, spec.name,
+                    summary={"tool": name, "refused": True, "reason": "invalid_arguments"})
+                return "ERROR: invalid tool arguments; follow the declared JSON schema"
             pinned_platform = None
             if name in OPS_SOURCE_TYPES or name.startswith("opc.ops_"):
                 # The model must not choose the marketplace: the executor pins it
@@ -3227,7 +3284,11 @@ class WeeklyOpsCouncil:
 
         def tool_executor(name: str, arguments: dict[str, Any]) -> str:
             result = execute_tool(name, arguments)
-            note = {"tool": name, "arguments": dict(arguments or {}), "result": result,
+            self.db.record_agent_event(tenant_id, run_id, spec.name, "task.loop.observe",
+                payload={"tool": name, "succeeded": not result.startswith("ERROR:"),
+                         "result_chars": len(result),
+                         "tool_calls_left": memory.tool_calls_left if memory else None})
+            note = {"tool": name, "arguments": dict(arguments) if isinstance(arguments, dict) else {}, "result": result,
                     "fetched_at": datetime.now(timezone.utc).isoformat()}
             if not result.startswith("ERROR:"):
                 candidates = tool_evidence_from_notes([note], platform=spec.platform,

@@ -120,8 +120,9 @@ def test_reflection_cannot_claim_unexecuted_steps_covered():
         return []
     result = run_harness(researcher=researcher)
     assert result.reflection["sufficiency"] == "partial"
-    assert result.reflection["covered_steps"] == [1]
-    assert result.reflection["uncovered_steps"] == [2]
+    assert result.reflection["covered_steps"] == []
+    assert result.reflection["uncovered_steps"] == [1, 2]
+    assert result.memory.open_questions
     assert result.result["plan_executed"][1]["outcome"] == "skipped"
 
 

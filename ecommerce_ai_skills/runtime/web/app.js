@@ -1847,8 +1847,127 @@ async function act(button, task, success, refresh = true) {
 
 function showDetail(title, value) {
   $("detail-title").textContent = tr(title);
+  $("detail-report").hidden = true;
+  $("detail-report").innerHTML = "";
+  $("detail-runtime").hidden = true;
+  $("detail-runtime").innerHTML = "";
+  $("detail-raw").open = true;
   $("detail-content").textContent = JSON.stringify(value, null, 2);
-  $("detail-dialog").showModal();
+  if (!$("detail-dialog").open) $("detail-dialog").showModal();
+}
+
+function renderRunReport(bundle, demo = false) {
+  const report = latestReport(bundle);
+  const text = value => escapeHtml(value ?? "—");
+  const heading = value => `<h3>${text(tr(value))}</h3>`;
+  const list = items => `<ul>${(items || []).map(item => `<li>${text(item)}</li>`).join("")}</ul>`;
+  const refs = items => items?.length ? `<small>${text(tr("证据引用"))}: ${items.map(text).join(", ")}</small>` : "";
+  const checkNames = {all_tasks_completed: "全部任务完成", reviewer_approval: "独立审核通过", origin_lineage: "运行来源与准入", priority_shape: "优先级结构", evidence_references: "证据引用有效", platform_isolation: "平台数据隔离", owner_assignment: "责任人有效", approval_policy: "审批要求完整", metric_claim_safety: "指标口径安全"};
+  let html = `<p>${text(bundle.run?.objective)}</p><p>${text(tr(bundle.run?.status || "unknown"))} · Reviewer: ${text(tr(bundle.run?.review_status || "pending"))}</p>`;
+  if (demo) html += `<p class="review-guard">${text(tr("演示报告来自模拟模型，不代表真实模型生成的分析。"))}</p>`;
+  if (report) {
+    html += heading("结论摘要") + `<p>${text(report.executive_summary)}</p>`;
+    html += heading("优先行动") + (report.priorities || []).map(item => `<article class="run-report-card"><h4>${text(item.rank)}. ${text(item.title)}</h4><p>${text(item.why_now)}</p><p>${text(item.downstream_action)}</p>${refs(item.evidence_refs)}</article>`).join("");
+    html += heading("风险与限制") + list([...(report.risks || []).map(item => `${item.risk} — ${item.mitigation}`), ...(report.limitations || [])]);
+  } else html += `<p>${text(tr("暂无分析报告，请先执行任务。"))}</p>`;
+  html += heading("平台分析");
+  for (const task of bundle.tasks || []) {
+    if (task.role !== "platform_specialist") continue;
+    const result = [...(bundle.artifacts || [])].reverse().find(a => a.task_id === task.id && a.kind === "specialist_finding" && Number(a.attempt) === Number(task.attempt_count))?.content;
+    if (!result) continue;
+    html += `<article class="run-report-card"><h4>${text(result.platform)}</h4><p>${text(result.summary)}</p>`;
+    html += (result.findings || []).map(item => `<p><strong>${text(item.title)}</strong><br>${text(item.recommendation)}</p>${refs(item.evidence_refs)}`).join("");
+    html += list(result.data_gaps) + `</article>`;
+  }
+  const evaluation = [...(bundle.evaluations || [])].reverse()[0];
+  if (evaluation) {
+    const checks = evaluation.details?.checks || [];
+    html += heading("工作流规则检查") + `<p>${text(tr("检查通过数"))}: ${text(evaluation.details?.passed_count)} / ${text(checks.length)}</p>`;
+    html += `<p>${text(tr("该检查验证流程与证据约束，不衡量建议的业务收益，也不是 RAG 指标评测。"))}</p>`;
+    html += `<ul>${checks.map(check => `<li>${check.passed ? "✓" : "✗"} ${text(tr(checkNames[check.name] || check.name))}${check.passed ? "" : ` — ${text(check.detail)}`}</li>`).join("")}</ul>`;
+  }
+  return html;
+}
+
+function renderRuntimeTrace(bundle, trace = {}) {
+  const text = value => escapeHtml(value ?? "—");
+  const label = value => text(tr(value));
+  const list = values => `<ul>${(values || []).map(value => `<li>${text(value)}</li>`).join("")}</ul>`;
+  const artifacts = trace.artifacts || [];
+  const events = trace.events || [];
+  let html = `<h3>${label("Runtime 执行过程")}</h3><p>${text(trace.provider || bundle.run?.provider)} / ${text(trace.model || bundle.run?.model)}</p>`;
+  for (const task of bundle.tasks || []) {
+    const ownArtifacts = artifacts.filter(item => item.agent === task.agent_name);
+    const ownEvents = events.filter(item => item.agent === task.agent_name);
+    const context = [...ownArtifacts].reverse().find(item => item.kind === "context_assembly")?.content;
+    const memory = [...ownArtifacts].reverse().find(item => item.kind === "specialist_working_memory" && item.content.phase === "final")?.content;
+    const calls = ownEvents.filter(item => item.type === "task.tool_call");
+    const budget = context?.budget;
+    html += `<details class="runtime-agent" ${task.role === "platform_specialist" ? "open" : ""}><summary>${text(task.agent_name)} · ${text(tr(task.status))} · ${calls.length} ${label("次工具调用")}</summary>`;
+    html += `<p>${label("加载的 Skill")}: ${text((task.skill_ids || []).join(", ") || "—")}</p>`;
+    html += `<p>${label("图授权工具上限")}: ${text((task.tool_policy?.allowed_tools || []).join(", ") || "—")}</p>`;
+    if (context) {
+      html += `<p>${label("本次可用工具")}: ${text(context.available_tools?.join(", ") ?? "—")}</p>`;
+      html += `<p>${label("上下文证据")}: ${text((context.evidence_ids || []).join(", "))}</p>`;
+      html += `<p>${label("历史上下文字符数")}: ${text(context.continuation_chars)}</p>`;
+    }
+    if (budget) html += `<p>${label("执行预算")}: ${text(budget.tier)} · Tool ≤ ${text(budget.max_tool_calls)} · ${label("重规划")} ≤ ${text(budget.max_replans)} · ${text(budget.deadline_seconds)}s</p>`;
+    if (!calls.length) html += `<p class="runtime-empty">${label("本次未调用工具；工具授权不等于已经调用。")}</p>`;
+    const timeline = [
+      ...ownArtifacts.filter(item => ["agent_plan", "agent_reflection", "specialist_working_memory", "tool_evidence_snapshot", "context_budget"].includes(item.kind)).map(item => ({...item, type: item.kind})),
+      ...ownEvents.filter(item => ["task.tool_call", "task.step.duplicate_refused", "task.replan.requested", "task.loop.transition", "task.loop.stopped", "task.loop.error", "task.loop.observe"].includes(item.type)),
+    ].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    html += `<ol class="runtime-timeline">`;
+    for (const item of timeline) {
+      const content = item.content || item.payload || {};
+      let detail = "";
+      let title = item.type;
+      if (item.type === "context_budget") detail = `<p>${text(content.phase)}: ${text(content.injected_chars)} / ${text(content.limit_chars)} chars</p>` + list(content.excerpted_fields);
+      if (item.type.startsWith("task.loop.")) detail = `<p>${text(content.phase || content.tool)} · ${text(content.reason || content.error_type || (item.type === "task.loop.observe" ? content.succeeded : content.sequence))}</p>`;
+      if (item.type === "agent_plan") {
+        title = "规划";
+        detail = list((content.plan?.steps || []).map(step => `${step.step_id}. ${step.question} [${(step.tools || []).join(", ")}]`));
+      } else if (item.type === "agent_reflection") {
+        title = "反思";
+        detail = `<p>${text(content.reflection?.sufficiency)} · ${text(content.reflection?.why_insufficient || "—")}</p>`;
+      } else if (item.type === "specialist_working_memory") {
+        title = "工作记忆";
+        detail = list((content.memory?.known || []).map(known => `${known.source_id}: ${known.gist || known.heading || ""}`));
+        detail += `<p>${label("剩余工具次数")}: ${text(content.memory?.budget?.tool_calls_left)} · ${label("未解决问题")}: ${text((content.memory?.open_questions || []).join("; ") || "—")}</p>`;
+      } else if (item.type === "tool_evidence_snapshot") {
+        title = "工具返回证据";
+        detail = list((content.entries || []).map(entry => `${entry.source_id}: ${entry.excerpt || ""}`));
+      } else if (item.type === "task.tool_call") {
+        title = "工具调用";
+        detail = `<p><strong>${text(content.tool)}</strong> · ${text(content.duration_ms ?? "—")}ms</p><p>${label("参数摘要")}: ${text(content.arguments_digest)} · ${text(content.reason || content.error || tr("succeeded"))}</p>`;
+      } else if (item.type === "task.replan.requested") {
+        title = "重规划";
+        detail = list(content.changes);
+      }
+      html += `<li><strong>${label(title)}</strong><small>${text(item.created_at)}</small>${detail}</li>`;
+    }
+    html += `</ol>`;
+    if (memory) html += `<p><strong>${label("停止原因")}: ${text(tr(memory.stop_reason || "unknown"))}</strong></p>` + list(memory.warnings);
+    html += `</details>`;
+  }
+  return html;
+}
+
+async function loadRunDetail(id) {
+  const [bundle, trace] = await Promise.all([api(`/v1/agent-runs/${id}`), api(`/v1/agent-runs/${id}/trace`)]);
+  showRunDetail(bundle, trace);
+}
+
+function showRunDetail(bundle, trace = {}) {
+  showDetail("分析报告", bundle);
+  $("detail-report").innerHTML = renderRunReport(bundle, state.me?.tenant_mode === "demo");
+  $("detail-report").hidden = false;
+  $("detail-runtime").innerHTML = renderRuntimeTrace(bundle, trace);
+  if (bundle.run?.status === "completed" && bundle.run?.review_status === "approved") {
+    $("detail-runtime").insertAdjacentHTML("beforeend", `<div class="runtime-followup"><label for="detail-followup-message">${escapeHtml(tr("补充要求"))}</label><textarea id="detail-followup-message" rows="3" maxlength="1000"></textarea><button class="primary-button" data-action="follow-up-run" data-id="${escapeHtml(bundle.run.id)}">${escapeHtml(tr("创建并执行下一轮"))}</button></div>`);
+  }
+  $("detail-runtime").hidden = false;
+  $("detail-raw").open = false;
 }
 
 function latestReport(bundle) {
@@ -2118,8 +2237,16 @@ document.body.addEventListener("click", event => {
     case "view-import": act(button, async () => showDetail("Evidence Import", await api(`/v1/evidence-imports/${id}`)), "Evidence 详情已加载。", false); break;
     case "view-job": act(button, async () => showDetail("Job", await api(`/v1/jobs/${id}`)), "Job 详情已加载。", false); break;
     case "view-action": showDetail("待审批 Action", (state.mission?.approval_inbox || []).find(item => item.id === id) || (state.briefing?.approvals || []).find(item => item.id === id)); break;
-    case "view-run": act(button, async () => { const bundle = await api(`/v1/agent-runs/${id}`); const tasks = bundle.tasks || []; const reviewerTask = tasks.find(task => ["reviewer", "review"].some(term => String(task.agent_name || task.agent || task.name || "").toLowerCase().includes(term))) || null; showDetail("Agent Run", {run: bundle.run, graph_version_id: bundle.run?.graph_version_id, review_status: bundle.run?.review_status || bundle.run?.reviewer_status, reviewer_task: reviewerTask, tasks, evaluations: bundle.evaluations, report: latestReport(bundle)}); }, "Agent Run 详情已加载。", false); break;
+    case "view-run": act(button, () => loadRunDetail(id), "Agent Run 详情已加载。", false); break;
     case "execute-run": act(button, () => api(`/v1/agent-runs/${id}/execute`, {method: "POST"}), "Agent Run 已完成。"); break;
+    case "follow-up-run":
+      if (!$("detail-followup-message").value.trim()) { $("detail-followup-message").focus(); break; }
+      act(button, async () => {
+        const child = await api(`/v1/agent-runs/${id}/follow-ups`, {method: "POST", headers: {"Idempotency-Key": idempotency("ui-followup")}, json: {feedback: $("detail-followup-message").value.trim()}});
+        await api(`/v1/agent-runs/${child.id}/execute`, {method: "POST"});
+        await loadRunDetail(child.id);
+      }, "Agent Run 已完成。");
+      break;
     case "view-daily-ops-run": act(button, async () => showDetail("Daily Ops 运行", await api(`/v1/daily-ops-runs/${id}`)), "Daily Ops 详情已加载。", false); break;
     case "view-daily-ops-brief": act(button, async () => showDetail("Daily Ops Brief", await api(`/v1/daily-ops-runs/${id}/brief`)), "Daily Ops Brief 已加载。", false); break;
     case "trigger-daily-ops": act(button, () => api(`/v1/daily-ops-schedules/${id}/trigger`, {method: "POST", headers: {"Idempotency-Key": idempotency("ui-daily-ops-trigger")}}), "Daily Ops 已触发。"); break;
@@ -2127,7 +2254,7 @@ document.body.addEventListener("click", event => {
     case "retry-daily-ops": act(button, () => api(`/v1/daily-ops-runs/${id}/retry`, {method: "POST", headers: {"Idempotency-Key": idempotency("ui-daily-ops-retry")}}), "Daily Ops 已重试。"); break;
     case "toggle-daily-ops-schedule": { const item = state.dailyOpsSchedules.find(schedule => schedule.id === id); if (!item) { notice("Daily Ops 计划不存在", "error"); break; } act(button, () => api(`/v1/daily-ops-schedules/${id}`, {method: "PATCH", json: {name: item.name, platform: item.platform, objective: item.objective, timezone_name: item.timezone, local_time: item.local_time, graph_version_id: item.graph_version_id, evidence_selectors: item.evidence_selectors, max_source_age_hours: item.max_source_age_hours, enabled: button.dataset.enabled === "true"}}), button.dataset.enabled === "true" ? "Daily Ops 计划已启用。" : "Daily Ops 计划已停用。"); break; }
     case "queue-run": act(button, () => api("/v1/jobs", {method: "POST", headers: {"Idempotency-Key": idempotency("ui-job")}, json: {run_id: id, max_attempts: 3}}), "Run 已加入后台队列。"); break;
-    case "evaluate-run": act(button, () => api(`/v1/agent-runs/${id}/evaluate`, {method: "POST"}), "Evaluation 已保存。"); break;
+    case "evaluate-run": act(button, async () => { await api(`/v1/agent-runs/${id}/evaluate`, {method: "POST"}); await loadRunDetail(id); }, "Evaluation 已保存。"); break;
     case "approve-action": act(button, () => api(`/v1/actions/${id}/approve`, {method: "POST"}), "Action 已批准；仍需 Operator 执行。"); break;
     case "view-proposal": act(button, async () => showDetail("行动提案", await api(`/v1/proposals/${id}`)), "提案详情已加载。", false); break;
     case "submit-proposal": act(button, () => api(`/v1/proposals/${id}/submit`, {method: "POST", json: {expected_version: Number(button.dataset.version)}}), "提案已提交审批。"); break;
